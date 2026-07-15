@@ -1,0 +1,107 @@
+name: imsg-platform
+label: iMessage
+kind: platform
+version: 1.2.0
+description: >
+  Native iMessage/SMS gateway adapter for Hermes Agent, backed by the local
+  `imsg` CLI on macOS.  Registers the `imsg` platform via the stock plugin API
+  so Hermes core needs no `Platform.IMSG` member.  Inbound replies route back to
+  the exact Messages chat rowid that produced them (no cross-chat guessing), with
+  a declarative allow/deny/prompt/silent_drop rule engine, DM/group allowlists,
+  participant + mention gating, identity aliases, read receipts, and out-of-
+  process (cron / send_message) delivery via a standalone sender, plus an
+  explicit agent-facing native poll create/vote/unvote tool with bridge
+  capability checks.
+platforms:
+  - macos
+# Surfaced in `hermes config` UI via the platform-plugin env var injector.
+requires_env: []
+optional_env:
+  - name: IMSG_ENABLED
+    description: "Enable the imsg platform from env only (1/true/yes)."
+    prompt: "Enable imsg? (true/false)"
+    password: false
+  - name: IMSG_BINARY
+    description: "Path to the imsg CLI (default: `imsg` on PATH)."
+    prompt: "imsg binary path"
+    password: false
+  - name: IMSG_HOME_CHANNEL
+    description: "Default chat for cron / notification delivery (Messages chat rowid or +E.164)."
+    prompt: "Home channel (chat rowid or +E.164)"
+    password: false
+  - name: IMSG_ALLOWED_USERS
+    description: "Comma-separated handles (E.164 / email) allowed to DM the bot."
+    prompt: "Allowed DM handles (comma-separated)"
+    password: false
+  - name: IMSG_GROUP_ALLOWED_USERS
+    description: "Comma-separated handles allowed to talk to the bot in group chats."
+    prompt: "Allowed group handles (comma-separated)"
+    password: false
+  - name: IMSG_ALLOWED_CHATS
+    description: "Comma-separated Messages chat rowids allowed in group context."
+    prompt: "Allowed chat rowids (comma-separated)"
+    password: false
+  - name: IMSG_ALLOW_ALL_USERS
+    description: "Allow anyone to talk to the bot (dev only)."
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: IMSG_REQUIRE_MENTION
+    description: "Require a mention to trigger in group chats (true/false)."
+    prompt: "Require mention in groups? (true/false)"
+    password: false
+  - name: IMSG_AUTO_LAUNCH
+    description: "Re-arm the imsg Messages.app bridge on connect (default: true)."
+    prompt: "Auto-launch bridge? (true/false)"
+    password: false
+  - name: IMSG_SEND_READ_RECEIPTS
+    description: "Mark inbound chats read so senders see a read receipt (default: true)."
+    prompt: "Send read receipts? (true/false)"
+    password: false
+  - name: IMSG_FALLBACK_ACTION
+    description: "Action when no rule matches: silent_drop | deny | prompt | allow (default: silent_drop)."
+    prompt: "Fallback action"
+    password: false
+  - name: IMSG_PARTICIPANT_VALIDATION
+    description: "Group participant validation: fast (event data) or strict (live CLI lookup)."
+    prompt: "Participant validation (fast/strict)"
+    password: false
+  - name: IMSG_PARTICIPANT_CACHE_TTL
+    description: "Seconds to cache strict-mode participant lookups (default: 300)."
+    prompt: "Participant cache TTL (seconds)"
+    password: false
+  - name: IMSG_DEBOUNCE
+    description: "Watch debounce duration, for example 500ms."
+    prompt: "Watch debounce"
+    password: false
+  - name: IMSG_STATE_FILE
+    description: "Optional path for the resumable last-rowid cursor."
+    prompt: "State file path"
+    password: false
+  - name: IMSG_MENTION_PATTERNS
+    description: "JSON array or comma/newline-separated regular expressions used for group mentions."
+    prompt: "Mention patterns"
+    password: false
+  - name: IMSG_PHONE_MIN_DIGITS
+    description: "Minimum digits for standalone targets to be treated as phone numbers (default 10)."
+    prompt: "Phone digit threshold"
+    password: false
+  - name: IMSG_DEFAULT_COUNTRY_CODE
+    description: "Country code added to bare 10-digit standalone targets (default 1)."
+    prompt: "Default country code"
+    password: false
+  - name: IMSG_COMMAND_TIMEOUT
+    description: "Timeout in seconds for bounded CLI commands (watch is supervised separately; default 30)."
+    prompt: "Command timeout (seconds)"
+    password: false
+  - name: IMSG_POLL_VOTES_DM
+    description: "Deliver inbound poll vote events from direct messages to the agent (default false)."
+    prompt: "Enable poll vote events in DMs? (true/false)"
+    password: false
+  - name: IMSG_POLL_VOTES_GROUP
+    description: "Deliver inbound poll vote events from group chats to the agent (default false)."
+    prompt: "Enable poll vote events in groups? (true/false)"
+    password: false
+  - name: IMSG_POLL_UNVOTES
+    description: "Include poll unvote/removal events when DM or group poll vote events are enabled (default false)."
+    prompt: "Include poll unvotes? (true/false)"
+    password: false

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-imsg-cli"
+version = "1.2.0"
+description = "Standalone Hermes gateway platform plugin: native iMessage/SMS via the local imsg CLI."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["hermes", "imessage", "imsg", "gateway", "platform", "plugin"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/promptclickrun/hermes-imsg-cli"
+Repository = "https://github.com/promptclickrun/hermes-imsg-cli"
+Issues = "https://github.com/promptclickrun/hermes-imsg-cli/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+# Optional: allow `pip install .` to expose the plugin as an entry-point plugin.
+# The primary supported install path is the directory symlink (see
+# scripts/install-local.sh), which loads hermes_imsg_cli/ as a `kind: platform`
+# plugin via its plugin.yaml manifest.
+[project.entry-points."hermes_agent.plugins"]
+imsg-platform = "hermes_imsg_cli"
+
+[tool.setuptools]
+packages = ["hermes_imsg_cli"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+hermes_imsg_cli = ["plugin.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
