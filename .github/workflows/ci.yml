@@ -25,8 +25,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install package (editable, with dev extras)
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Install package and build tooling
+        run: python -m pip install --upgrade pip wheel && python -m pip install -e ".[dev]"
 
       - name: Run test suite
         run: python -m pytest -q
