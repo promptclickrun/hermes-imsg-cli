@@ -990,6 +990,9 @@ class ImsgAdapter(BasePlatformAdapter):
             chat_id_alt=_event_chat_guid(event),
             message_id=message_id,
         )
+        explicit_reply = bool(
+            _event_get(event, "thread_originator_guid", "threadOriginatorGuid")
+        )
         return MessageEvent(
             text=text,
             message_type=msg_type,
@@ -998,9 +1001,21 @@ class ImsgAdapter(BasePlatformAdapter):
             message_id=message_id,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=_event_get(event, "reply_to_guid", "replyToGuid"),
-            reply_to_text=_event_get(event, "reply_to_text", "replyToText"),
-            reply_to_author_id=_event_get(event, "reply_to_sender", "replyToSender"),
+            reply_to_message_id=(
+                _event_get(event, "reply_to_guid", "replyToGuid")
+                if explicit_reply
+                else None
+            ),
+            reply_to_text=(
+                _event_get(event, "reply_to_text", "replyToText")
+                if explicit_reply
+                else None
+            ),
+            reply_to_author_id=(
+                _event_get(event, "reply_to_sender", "replyToSender")
+                if explicit_reply
+                else None
+            ),
         )
 
     # ------------------------------------------------------------------

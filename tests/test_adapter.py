@@ -110,6 +110,50 @@ def test_event_to_message_event_uses_chat_rowid_as_source_chat_id(tmp_path):
     assert message.source.chat_type == "group"
 
 
+def test_event_to_message_event_drops_implicit_adjacency_reply_metadata(tmp_path):
+    """Plain imsg messages carry reply_to_* for the prior message even though
+    they are not native Messages replies. Without thread origin metadata those
+    adjacency fields must not be exposed to Hermes as an explicit reply."""
+    adapter = make_adapter(tmp_path, allowed_handles=["+120****0101"])
+    message = adapter._to_message_event({
+        "id": 100,
+        "chat_id": 3,
+        "guid": "PLAIN-MESSAGE",
+        "sender": "+120****0101",
+        "text": "ordinary follow-up",
+        "reply_to_guid": "PREVIOUS-MESSAGE",
+        "reply_to_text": "previous text",
+        "reply_to_sender": "+120****0101",
+    })
+    assert message is not None
+    assert message.reply_to_message_id is None
+    assert message.reply_to_text is None
+    assert message.reply_to_author_id is None
+
+
+def test_event_to_message_event_preserves_explicit_native_reply_metadata(tmp_path):
+    """A native Messages Reply is identified by thread_originator_guid. The
+    selected reply target can be older than the adjacent conversation turn and
+    must remain available to Hermes for disambiguation."""
+    adapter = make_adapter(tmp_path, allowed_handles=["+120****0101"])
+    message = adapter._to_message_event({
+        "id": 101,
+        "chat_id": 3,
+        "guid": "EXPLICIT-REPLY",
+        "sender": "+120****0101",
+        "text": "replying to an older message",
+        "reply_to_guid": "OLDER-TARGET",
+        "reply_to_text": "message from five turns ago",
+        "reply_to_sender": "+120****0199",
+        "thread_originator_guid": "OLDER-TARGET",
+        "thread_originator_part": "0:0:27",
+    })
+    assert message is not None
+    assert message.reply_to_message_id == "OLDER-TARGET"
+    assert message.reply_to_text == "message from five turns ago"
+    assert message.reply_to_author_id == "+120****0199"
+
+
 def test_event_to_message_event_prefers_identity_alias(tmp_path):
     adapter = make_adapter(
         tmp_path,
