@@ -134,7 +134,7 @@ async def test_send_imsg_direct_rowid_uses_chat_id(monkeypatch, tmp_path):
 
     calls = []
 
-    async def fake_run(self, args):
+    async def fake_run(self, args, **_kwargs):
         calls.append(args)
         return 0, json.dumps({"guid": "OUT"}), ""
 
@@ -153,7 +153,7 @@ async def test_send_imsg_direct_bare_phone_normalized_to_to(monkeypatch, tmp_pat
 
     calls = []
 
-    async def fake_run(self, args):
+    async def fake_run(self, args, **_kwargs):
         calls.append(args)
         return 0, json.dumps({"guid": "OUT"}), ""
 
@@ -170,7 +170,7 @@ async def test_send_imsg_direct_bare_phone_normalized_to_to(monkeypatch, tmp_pat
 async def test_send_imsg_direct_reports_error(monkeypatch, tmp_path):
     from hermes_imsg_cli.adapter import ImsgAdapter, send_imsg_direct
 
-    async def fake_run(self, args):
+    async def fake_run(self, args, **_kwargs):
         return 1, "", "boom"
 
     monkeypatch.setattr(ImsgAdapter, "_run_imsg", fake_run)
@@ -187,7 +187,7 @@ async def test_send_imsg_direct_multiple_files_send_caption_only_once(monkeypatc
 
     calls = []
 
-    async def fake_run(self, args):
+    async def fake_run(self, args, **_kwargs):
         calls.append(args)
         return 0, json.dumps({"guid": f"OUT-{len(calls)}"}), ""
 
@@ -220,7 +220,7 @@ async def test_send_imsg_direct_partial_failure_reports_deterministic_state(monk
 
     calls = []
 
-    async def fake_run(self, args):
+    async def fake_run(self, args, **_kwargs):
         calls.append(args)
         if len(calls) == 1:
             return 0, json.dumps({"guid": "OUT-1"}), ""

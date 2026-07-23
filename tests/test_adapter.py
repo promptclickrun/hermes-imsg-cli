@@ -14,6 +14,7 @@ pytest.importorskip("gateway", reason="Hermes core not on PYTHONPATH")
 from gateway.config import PlatformConfig, Platform  # noqa: E402
 from gateway.platforms.base import MessageType, SendResult  # noqa: E402
 
+from hermes_imsg_cli import cli  # noqa: E402
 from hermes_imsg_cli.adapter import (  # noqa: E402
     ImsgAdapter,
     check_imsg_requirements,
@@ -27,6 +28,81 @@ def make_adapter(tmp_path, **extra):
     extra.setdefault("state_file", str(tmp_path / "imsg_state.json"))
     extra.setdefault("binary", "/usr/bin/false")
     return ImsgAdapter(PlatformConfig(enabled=True, extra=extra))
+
+
+@pytest.mark.asyncio
+async def test_adapter_runner_passes_transaction_token_through_wait_for(monkeypatch, tmp_path):
+    """The adapter's wait_for child must explicitly reenter its parent transaction."""
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"ok":true}\n', b""
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+        async def wait(self):
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess()
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(cli, "MUTATION_LOCK_PATH", tmp_path / "imsg-mutation.lock")
+    adapter = make_adapter(tmp_path, binary="imsg", command_timeout=0.2)
+
+    await asyncio.wait_for(adapter._launch_bridge(), timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_unrelated_adapter_child_cannot_inherit_transaction_token(monkeypatch, tmp_path):
+    """A generic adapter child must wait for its parent's transaction to exit."""
+    calls = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"ok":true}\n', b""
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+        async def wait(self):
+            return self.returncode
+
+    async def fake_create_subprocess_exec(_binary, *args, **_kwargs):
+        calls.append(args[0])
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(cli, "MUTATION_LOCK_PATH", tmp_path / "imsg-mutation.lock")
+    adapter = make_adapter(tmp_path, binary="imsg", command_timeout=1.0)
+
+    async with cli.mutation_transaction():
+        child = asyncio.create_task(
+            adapter._run_imsg(
+                ["send", "--chat-id", "3", "--text", "child", "--json"]
+            )
+        )
+        await asyncio.sleep(0.03)
+        assert calls == []
+
+    code, _stdout, _stderr = await child
+    assert code == 0
+    assert calls == ["send"]
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +415,7 @@ async def test_send_plain_uses_chat_id_not_guid(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
     seen = {}
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         seen["args"] = args
         return 0, json.dumps({"guid": "OUT"}), ""
 
@@ -361,7 +437,7 @@ async def test_send_rearms_bridge_and_retries_once_on_appleevent_disconnect(monk
         (0, json.dumps({"guid": "RECOVERED"}), ""),
     ]
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         calls.append(args)
         return results.pop(0)
 
@@ -389,7 +465,7 @@ async def test_bridge_launch_holds_mutation_transaction_through_settle(monkeypat
         yield
         events.append("exit")
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         events.append(args[0])
         return 0, json.dumps({"status": "launched"}), ""
 
@@ -410,7 +486,7 @@ async def test_send_does_not_retry_indeterminate_appleevent_timeout(monkeypatch,
     adapter = make_adapter(tmp_path, binary="imsg", auto_launch=True)
     calls = []
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         calls.append(args)
         return 1, "", "AppleEvent timed out. (-1712)"
 
@@ -436,7 +512,7 @@ async def test_send_never_redirects_via_caller_supplied_chat_guid(monkeypatch, t
     adapter._recent_chat_guids["16"] = "iMessage;-;+12025550197"
     seen_args = []
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         seen_args.append(args)
         return 0, json.dumps({"guid": "OUT"}), ""
 
@@ -469,7 +545,7 @@ async def test_send_plain_fails_closed_on_empty_stdout(monkeypatch, tmp_path):
     """A zero exit code alone must never be treated as a successful send."""
     adapter = make_adapter(tmp_path, binary="imsg")
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         return 0, "", ""
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
@@ -482,7 +558,7 @@ async def test_send_plain_fails_closed_on_empty_stdout(monkeypatch, tmp_path):
 async def test_send_plain_fails_closed_on_malformed_json_stdout(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         return 0, "not-json-at-all", ""
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
@@ -494,7 +570,7 @@ async def test_send_plain_fails_closed_on_malformed_json_stdout(monkeypatch, tmp
 async def test_send_plain_fails_closed_on_non_object_json_stdout(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         return 0, json.dumps(["not", "an", "object"]), ""
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
@@ -506,7 +582,7 @@ async def test_send_plain_fails_closed_on_non_object_json_stdout(monkeypatch, tm
 async def test_send_plain_converts_subprocess_exception_to_failure(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         raise TimeoutError("recipient +12025550100 timed out")
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
@@ -529,7 +605,7 @@ async def test_send_document_rejects_symlink_attachment(monkeypatch, tmp_path):
     link.symlink_to(real_file)
     called = False
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         nonlocal called
         called = True
         return 0, json.dumps({"guid": "OUT"}), ""
@@ -548,7 +624,7 @@ async def test_send_document_rejects_directory_attachment(monkeypatch, tmp_path)
     directory.mkdir()
     called = False
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         nonlocal called
         called = True
         return 0, json.dumps({"guid": "OUT"}), ""
@@ -569,7 +645,7 @@ async def test_send_document_rejects_fifo_attachment(monkeypatch, tmp_path):
     os.mkfifo(fifo_path)
     called = False
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         nonlocal called
         called = True
         return 0, json.dumps({"guid": "OUT"}), ""
@@ -585,7 +661,7 @@ async def test_send_document_rejects_fifo_attachment(monkeypatch, tmp_path):
 async def test_send_document_rejects_missing_attachment(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         return 0, json.dumps({"guid": "OUT"}), ""
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
@@ -601,7 +677,7 @@ async def test_send_document_accepts_regular_file(monkeypatch, tmp_path):
     real_file.write_bytes(b"data")
     seen = {}
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         seen["args"] = args
         return 0, json.dumps({"guid": "OUT"}), ""
 
@@ -615,7 +691,7 @@ async def test_send_document_accepts_regular_file(monkeypatch, tmp_path):
 async def test_send_imsg_direct_uses_adapter(monkeypatch, tmp_path):
     calls = []
 
-    async def fake_run(self, args):
+    async def fake_run(self, args, **_kwargs):
         calls.append(args)
         return 0, json.dumps({"guid": "OUT"}), ""
 
@@ -637,7 +713,7 @@ async def test_mark_read_uses_chat_id(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
     seen = {}
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         seen["args"] = args
         return 0, json.dumps({"success": True, "marked_as_read": True}), ""
 
@@ -656,7 +732,7 @@ async def test_adapter_read_surfaces_parse_ndjson(monkeypatch, tmp_path):
         (0, '{"id":10,"text":"pizza"}\n', ""),
     ]
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         return responses.pop(0)
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
@@ -670,7 +746,7 @@ async def test_unknown_reaction_is_rejected_without_subprocess(monkeypatch, tmp_
     adapter = make_adapter(tmp_path, binary="imsg")
     called = False
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         nonlocal called
         called = True
         return 0, "{}", ""
@@ -736,7 +812,7 @@ def test_read_receipts_default_on(tmp_path):
 async def test_bounded_command_timeout(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, command_timeout=0.001)
 
-    async def slow(binary, args):
+    async def slow(binary, args, **_kwargs):
         await asyncio.sleep(1)
         return 0, "", ""
 
@@ -761,7 +837,7 @@ async def test_adapter_poll_send_binds_inbound_operation_to_exact_rowid(monkeypa
     adapter = make_adapter(tmp_path, binary="imsg")
     calls = []
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         calls.append(args)
         if args[0] == "status":
             return 0, _poll_status(), ""
@@ -791,7 +867,7 @@ async def test_adapter_poll_vote_and_selective_unvote_dispatch(monkeypatch, tmp_
     adapter = make_adapter(tmp_path, binary="imsg")
     calls = []
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         calls.append(args)
         if args[0] == "status":
             return 0, _poll_status(), ""
@@ -810,7 +886,7 @@ async def test_adapter_poll_vote_and_selective_unvote_dispatch(monkeypatch, tmp_
 async def test_adapter_poll_error_is_structured_redacted_and_never_false_success(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         if args[0] == "status":
             return 0, _poll_status(), ""
         return 5, "", "failed for +12025550100"
@@ -966,7 +1042,7 @@ async def test_get_participants_strict_calls_cli(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, participant_validation="strict")
     payload = json.dumps({"participants": ["+111", "+222"], "is_group": True})
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         assert args[:3] == ["group", "--chat-id", "16"]
         return 0, payload, ""
 
@@ -983,7 +1059,7 @@ async def test_get_participants_strict_uses_cache(monkeypatch, tmp_path):
     adapter._participant_cache["16"] = (handles, _time.time() + 300)
     call_count = {"n": 0}
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         call_count["n"] += 1
         return 0, json.dumps({"participants": ["+999"]}), ""
 
@@ -999,7 +1075,7 @@ async def test_get_participants_strict_refreshes_expired_cache(monkeypatch, tmp_
     adapter = make_adapter(tmp_path, participant_validation="strict", participant_cache_ttl=300)
     adapter._participant_cache["16"] = ({"+stale"}, _time.time() - 1)
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         return 0, json.dumps({"participants": ["+fresh"]}), ""
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
@@ -1011,7 +1087,7 @@ async def test_get_participants_strict_refreshes_expired_cache(monkeypatch, tmp_
 async def test_get_participants_strict_cli_error_returns_empty(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, participant_validation="strict")
 
-    async def fake_run(args):
+    async def fake_run(args, **_kwargs):
         return 1, "", "error"
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)

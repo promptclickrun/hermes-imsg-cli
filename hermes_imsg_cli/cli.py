@@ -56,9 +56,10 @@ _MUTATING_COMMANDS = frozenset(
         "transaction",
     }
 )
-_MUTATION_OWNER: contextvars.ContextVar[Optional[asyncio.Task[Any]]] = contextvars.ContextVar(
-    "imsg_mutation_lock_owner", default=None
+_MUTATION_TOKEN: contextvars.ContextVar[Optional[object]] = contextvars.ContextVar(
+    "imsg_mutation_lock_token", default=None
 )
+_ACTIVE_MUTATION_TOKENS: set[object] = set()
 
 
 def _requires_mutation_lock(args: list[str]) -> bool:
@@ -66,35 +67,41 @@ def _requires_mutation_lock(args: list[str]) -> bool:
 
 
 @asynccontextmanager
-async def _async_mutation_lock(args: list[str]):
+async def _async_mutation_lock(args: list[str], *, mutation_token: object | None = None):
     if not _requires_mutation_lock(args):
         yield
         return
-    current_task = asyncio.current_task()
-    if current_task is not None and _MUTATION_OWNER.get() is current_task:
-        yield
+    if (
+        mutation_token is not None
+        and mutation_token in _ACTIVE_MUTATION_TOKENS
+        and _MUTATION_TOKEN.get() is mutation_token
+    ):
+        yield mutation_token
         return
 
     MUTATION_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     handle = MUTATION_LOCK_PATH.open("a+")
     deadline = time.monotonic() + MUTATION_LOCK_TIMEOUT
     acquired = False
-    token = None
+    reset_token = None
+    owned_token = object()
     try:
         while True:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
-                token = _MUTATION_OWNER.set(current_task)
+                reset_token = _MUTATION_TOKEN.set(owned_token)
+                _ACTIVE_MUTATION_TOKENS.add(owned_token)
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("timed out waiting for the iMessage mutation lock")
                 await asyncio.sleep(0.05)
-        yield
+        yield owned_token
     finally:
-        if token is not None:
-            _MUTATION_OWNER.reset(token)
+        _ACTIVE_MUTATION_TOKENS.discard(owned_token)
+        if reset_token is not None:
+            _MUTATION_TOKEN.reset(reset_token)
         if acquired:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
@@ -103,8 +110,8 @@ async def _async_mutation_lock(args: list[str]):
 @asynccontextmanager
 async def mutation_transaction():
     """Hold the host-wide mutation lock across a multi-command recovery."""
-    async with _async_mutation_lock(["transaction"]):
-        yield
+    async with _async_mutation_lock(["transaction"]) as mutation_token:
+        yield mutation_token
 
 
 @contextmanager
@@ -565,9 +572,14 @@ async def _terminate_then_kill(
         await proc.wait()
 
 
-async def run_imsg(binary: str, args: list[str]) -> tuple[int, str, str]:
+async def run_imsg(
+    binary: str,
+    args: list[str],
+    *,
+    mutation_token: object | None = None,
+) -> tuple[int, str, str]:
     """Run ``binary <args>`` asynchronously, returning ``(code, stdout, stderr)``."""
-    async with _async_mutation_lock(args):
+    async with _async_mutation_lock(args, mutation_token=mutation_token):
         proc = await asyncio.create_subprocess_exec(
             binary,
             *args,

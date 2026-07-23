@@ -92,10 +92,16 @@ async def test_recovery_transaction_blocks_send_during_bridge_settle(monkeypatch
     monkeypatch.setattr(cli, "MUTATION_LOCK_PATH", tmp_path / "imsg-mutation.lock", raising=False)
 
     async def recovery_sequence():
-        async with cli.mutation_transaction():
-            await cli.run_imsg("imsg", ["launch", "--json"])
+        async with cli.mutation_transaction() as mutation_token:
+            await cli.run_imsg(
+                "imsg", ["launch", "--json"], mutation_token=mutation_token
+            )
             await asyncio.sleep(0.05)
-            await cli.run_imsg("imsg", ["send", "--chat-id", "3", "--text", "retry", "--json"])
+            await cli.run_imsg(
+                "imsg",
+                ["send", "--chat-id", "3", "--text", "retry", "--json"],
+                mutation_token=mutation_token,
+            )
 
     async def competing_send():
         await asyncio.sleep(0.01)
@@ -104,6 +110,26 @@ async def test_recovery_transaction_blocks_send_during_bridge_settle(monkeypatch
     await asyncio.gather(recovery_sequence(), competing_send())
 
     assert calls == ["launch", "send", "send"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_transaction_token_reenters_through_wait_for(monkeypatch, tmp_path):
+    tracker = {"active": 0, "max_active": 0}
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return _FakeProcess(tracker)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(cli, "MUTATION_LOCK_PATH", tmp_path / "imsg-mutation.lock")
+
+    async with cli.mutation_transaction() as token:
+        code, _stdout, _stderr = await asyncio.wait_for(
+            cli.run_imsg("imsg", ["launch", "--json"], mutation_token=token),
+            timeout=0.5,
+        )
+
+    assert code == 0
+    assert tracker["max_active"] == 1
 
 
 @pytest.mark.asyncio
@@ -121,6 +147,38 @@ async def test_child_task_cannot_inherit_and_bypass_transaction_lock(monkeypatch
         child = asyncio.create_task(
             cli.run_imsg("imsg", ["send", "--chat-id", "3", "--text", "child", "--json"])
         )
+        await asyncio.sleep(0.03)
+        assert calls == []
+
+    await child
+    assert calls == ["send"]
+
+
+@pytest.mark.asyncio
+async def test_stale_copied_token_cannot_bypass_a_later_transaction(monkeypatch, tmp_path):
+    calls = []
+    release_child = asyncio.Event()
+
+    async def fake_create_subprocess_exec(_binary, *args, **_kwargs):
+        calls.append(args[0])
+        return _FakeProcess({"active": 0, "max_active": 0})
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(cli, "MUTATION_LOCK_PATH", tmp_path / "imsg-mutation.lock")
+
+    async with cli.mutation_transaction() as stale_token:
+        async def delayed_stale_call():
+            await release_child.wait()
+            return await cli.run_imsg(
+                "imsg",
+                ["send", "--chat-id", "3", "--text", "stale", "--json"],
+                mutation_token=stale_token,
+            )
+
+        child = asyncio.create_task(delayed_stale_call())
+
+    async with cli.mutation_transaction():
+        release_child.set()
         await asyncio.sleep(0.03)
         assert calls == []
 

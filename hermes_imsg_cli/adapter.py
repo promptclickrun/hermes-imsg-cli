@@ -737,10 +737,10 @@ class ImsgAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _launch_bridge(self) -> None:
-        async with cli.mutation_transaction():
-            await self._launch_bridge_locked()
+        async with cli.mutation_transaction() as mutation_token:
+            await self._launch_bridge_locked(mutation_token)
 
-    async def _launch_bridge_locked(self) -> None:
+    async def _launch_bridge_locked(self, mutation_token: object) -> None:
         """Inject imsg's bridge dylib into Messages.app so IMCore features work.
 
         Best-effort: a launch failure never blocks the adapter from connecting.
@@ -748,7 +748,9 @@ class ImsgAdapter(BasePlatformAdapter):
         if not self.auto_launch:
             return
         try:
-            code, stdout, stderr = await self._run_imsg(cli.build_launch_args())
+            code, stdout, stderr = await self._run_imsg(
+                cli.build_launch_args(), mutation_token=mutation_token
+            )
             if code == 0:
                 logger.info("[imsg] Messages.app bridge armed via `imsg launch`")
                 await asyncio.sleep(2)
@@ -1026,10 +1028,15 @@ class ImsgAdapter(BasePlatformAdapter):
     # Sending
     # ------------------------------------------------------------------
 
-    async def _run_imsg(self, args: list[str]) -> tuple[int, str, str]:
+    async def _run_imsg(
+        self, args: list[str], *, mutation_token: object | None = None
+    ) -> tuple[int, str, str]:
         try:
             return await asyncio.wait_for(
-                cli.run_imsg(self.binary, args), timeout=self.command_timeout
+                cli.run_imsg(
+                    self.binary, args, mutation_token=mutation_token
+                ),
+                timeout=self.command_timeout,
             )
         except asyncio.TimeoutError as exc:
             command = args[0] if args else "command"
@@ -1219,14 +1226,18 @@ class ImsgAdapter(BasePlatformAdapter):
         content: str,
         media_files: Optional[list[tuple[str, bool]]] = None,
     ) -> SendResult:
-        async with cli.mutation_transaction():
-            return await self._send_plain_locked(chat_id, content, media_files)
+        async with cli.mutation_transaction() as mutation_token:
+            return await self._send_plain_locked(
+                chat_id, content, media_files, mutation_token=mutation_token
+            )
 
     async def _send_plain_locked(
         self,
         chat_id: str,
         content: str,
         media_files: Optional[list[tuple[str, bool]]] = None,
+        *,
+        mutation_token: object,
     ) -> SendResult:
         if media_files:
             for media_path, _is_voice in media_files:
@@ -1235,7 +1246,9 @@ class ImsgAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=attachment_error)
         try:
             args = cli.build_plain_send_args(str(chat_id), content, media_files=media_files)
-            code, stdout, stderr = await self._run_imsg(args)
+            code, stdout, stderr = await self._run_imsg(
+                args, mutation_token=mutation_token
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1248,9 +1261,11 @@ class ImsgAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[imsg] AppleEvent send path disconnected; serially re-arming bridge and retrying once"
                 )
-                await self._launch_bridge()
+                await self._launch_bridge_locked(mutation_token)
                 try:
-                    code, stdout, stderr = await self._run_imsg(args)
+                    code, stdout, stderr = await self._run_imsg(
+                        args, mutation_token=mutation_token
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
