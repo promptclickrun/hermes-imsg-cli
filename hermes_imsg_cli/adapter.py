@@ -737,6 +737,10 @@ class ImsgAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _launch_bridge(self) -> None:
+        async with cli.mutation_transaction():
+            await self._launch_bridge_locked()
+
+    async def _launch_bridge_locked(self) -> None:
         """Inject imsg's bridge dylib into Messages.app so IMCore features work.
 
         Best-effort: a launch failure never blocks the adapter from connecting.
@@ -1215,6 +1219,15 @@ class ImsgAdapter(BasePlatformAdapter):
         content: str,
         media_files: Optional[list[tuple[str, bool]]] = None,
     ) -> SendResult:
+        async with cli.mutation_transaction():
+            return await self._send_plain_locked(chat_id, content, media_files)
+
+    async def _send_plain_locked(
+        self,
+        chat_id: str,
+        content: str,
+        media_files: Optional[list[tuple[str, bool]]] = None,
+    ) -> SendResult:
         if media_files:
             for media_path, _is_voice in media_files:
                 attachment_error = _validate_outbound_attachment_path(media_path)
@@ -1228,7 +1241,22 @@ class ImsgAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=_redact(exc))
         if code != 0:
-            return SendResult(success=False, error=_redact(stderr or stdout or f"imsg exited {code}"))
+            first_error = stderr or stdout or f"imsg exited {code}"
+            if self.auto_launch and any(
+                signature in first_error for signature in ("(-600)", "(-609)")
+            ):
+                logger.warning(
+                    "[imsg] AppleEvent send path disconnected; serially re-arming bridge and retrying once"
+                )
+                await self._launch_bridge()
+                try:
+                    code, stdout, stderr = await self._run_imsg(args)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    return SendResult(success=False, error=_redact(exc))
+            if code != 0:
+                return SendResult(success=False, error=_redact(stderr or stdout or first_error))
         # Fail closed: exit 0 alone is not success.  Upstream's `send --json`
         # contract is one JSON confirmation object; malformed or empty stdout
         # on a zero exit must never be reported as a successful send.

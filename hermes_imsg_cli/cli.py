@@ -8,8 +8,13 @@ helpers execute the binary and are the single choke-point for subprocess use.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import fcntl
 import json
 import subprocess
+import time
+from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 from typing import Any, Iterable, Optional, Union
 
 
@@ -26,6 +31,107 @@ _MAX_ROWID_DIGITS = 19
 # this module.  Short enough to keep bounded-timeout callers responsive, long
 # enough for a well-behaved child to exit cleanly on SIGTERM.
 DEFAULT_TERMINATE_GRACE = 2.0
+
+# Every command that mutates Messages/IMCore shares one host-wide lock with the
+# watchdog.  This prevents a bridge launch or app recovery from overlapping an
+# outbound send in another process, the race that produces AppleEvent -600/-609
+# failures on macOS Tahoe.
+# Messages.app and IMCore are user-session global, not Hermes-profile local.
+# The lock must therefore stay in the macOS user's default Hermes state root so
+# every profile, cron, and standalone plugin process contends on the same file.
+MUTATION_LOCK_PATH = Path.home() / ".hermes" / "state" / "imsg-mutation.lock"
+MUTATION_LOCK_TIMEOUT = 45.0
+_MUTATING_COMMANDS = frozenset(
+    {
+        "launch",
+        "send",
+        "send-rich",
+        "typing",
+        "read",
+        "tapback",
+        "react",
+        "poll",
+        "group",
+        "rpc",
+        "transaction",
+    }
+)
+_MUTATION_OWNER: contextvars.ContextVar[Optional[asyncio.Task[Any]]] = contextvars.ContextVar(
+    "imsg_mutation_lock_owner", default=None
+)
+
+
+def _requires_mutation_lock(args: list[str]) -> bool:
+    return bool(args) and args[0] in _MUTATING_COMMANDS
+
+
+@asynccontextmanager
+async def _async_mutation_lock(args: list[str]):
+    if not _requires_mutation_lock(args):
+        yield
+        return
+    current_task = asyncio.current_task()
+    if current_task is not None and _MUTATION_OWNER.get() is current_task:
+        yield
+        return
+
+    MUTATION_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handle = MUTATION_LOCK_PATH.open("a+")
+    deadline = time.monotonic() + MUTATION_LOCK_TIMEOUT
+    acquired = False
+    token = None
+    try:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                token = _MUTATION_OWNER.set(current_task)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("timed out waiting for the iMessage mutation lock")
+                await asyncio.sleep(0.05)
+        yield
+    finally:
+        if token is not None:
+            _MUTATION_OWNER.reset(token)
+        if acquired:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+@asynccontextmanager
+async def mutation_transaction():
+    """Hold the host-wide mutation lock across a multi-command recovery."""
+    async with _async_mutation_lock(["transaction"]):
+        yield
+
+
+@contextmanager
+def _sync_mutation_lock(args: list[str]):
+    if not _requires_mutation_lock(args):
+        yield
+        return
+
+    MUTATION_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handle = MUTATION_LOCK_PATH.open("a+")
+    deadline = time.monotonic() + MUTATION_LOCK_TIMEOUT
+    acquired = False
+    try:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("timed out waiting for the iMessage mutation lock")
+                time.sleep(0.05)
+        yield
+    finally:
+        if acquired:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 class ImsgJSONError(ValueError):
@@ -461,26 +567,27 @@ async def _terminate_then_kill(
 
 async def run_imsg(binary: str, args: list[str]) -> tuple[int, str, str]:
     """Run ``binary <args>`` asynchronously, returning ``(code, stdout, stderr)``."""
-    proc = await asyncio.create_subprocess_exec(
-        binary,
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_b, stderr_b = await proc.communicate()
-    except asyncio.CancelledError:
-        # ``ImsgClient`` and the adapter impose timeouts with wait_for().  Do not
-        # leave a timed-out send/read child running after its coroutine is
-        # cancelled — terminate first, then bound the wait before killing so a
-        # child that ignores SIGTERM can never hang cleanup indefinitely.
-        await _terminate_then_kill(proc)
-        raise
-    return (
-        proc.returncode or 0,
-        stdout_b.decode("utf-8", errors="replace"),
-        stderr_b.decode("utf-8", errors="replace"),
-    )
+    async with _async_mutation_lock(args):
+        proc = await asyncio.create_subprocess_exec(
+            binary,
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_b, stderr_b = await proc.communicate()
+        except asyncio.CancelledError:
+            # ``ImsgClient`` and the adapter impose timeouts with wait_for().  Do not
+            # leave a timed-out send/read child running after its coroutine is
+            # cancelled — terminate first, then bound the wait before killing so a
+            # child that ignores SIGTERM can never hang cleanup indefinitely.
+            await _terminate_then_kill(proc)
+            raise
+        return (
+            proc.returncode or 0,
+            stdout_b.decode("utf-8", errors="replace"),
+            stderr_b.decode("utf-8", errors="replace"),
+        )
 
 
 async def run_imsg_rpc(binary: str, request: dict[str, Any]) -> tuple[int, str, str]:
@@ -492,51 +599,53 @@ async def run_imsg_rpc(binary: str, request: dict[str, Any]) -> tuple[int, str, 
     path that can be interpreted as a second native poll by some Messages
     bridge versions.
     """
-    proc = await asyncio.create_subprocess_exec(
-        binary,
-        "rpc",
-        "--json",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    assert proc.stdin is not None
-    assert proc.stdout is not None
-    assert proc.stderr is not None
-    try:
-        proc.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
-        await proc.stdin.drain()
-        line = await proc.stdout.readline()
-        if not line:
-            stderr_b = await proc.stderr.read()
-            await proc.wait()
-            return proc.returncode or 1, "", stderr_b.decode("utf-8", errors="replace")
-        proc.stdin.close()
-        await proc.wait()
-        stderr_b = await proc.stderr.read()
-        return proc.returncode or 0, line.decode("utf-8", errors="replace"), stderr_b.decode(
-            "utf-8", errors="replace"
+    async with _async_mutation_lock(["rpc"]):
+        proc = await asyncio.create_subprocess_exec(
+            binary,
+            "rpc",
+            "--json",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-    except asyncio.CancelledError:
-        # Bounded terminate-then-kill: never leave an orphaned `imsg rpc`
-        # process running past a short grace period.
-        await _terminate_then_kill(proc)
-        raise
-    except Exception:
-        await _terminate_then_kill(proc)
-        raise
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+        try:
+            proc.stdin.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
+            await proc.stdin.drain()
+            line = await proc.stdout.readline()
+            if not line:
+                stderr_b = await proc.stderr.read()
+                await proc.wait()
+                return proc.returncode or 1, "", stderr_b.decode("utf-8", errors="replace")
+            proc.stdin.close()
+            await proc.wait()
+            stderr_b = await proc.stderr.read()
+            return proc.returncode or 0, line.decode("utf-8", errors="replace"), stderr_b.decode(
+                "utf-8", errors="replace"
+            )
+        except asyncio.CancelledError:
+            # Bounded terminate-then-kill: never leave an orphaned `imsg rpc`
+            # process running past a short grace period.
+            await _terminate_then_kill(proc)
+            raise
+        except Exception:
+            await _terminate_then_kill(proc)
+            raise
 
 
 def run_imsg_sync(binary: str, args: list[str], *, timeout: float = 10.0) -> tuple[int, str, str]:
     """Run ``binary <args>`` synchronously (used by requirements probes)."""
     try:
-        result = subprocess.run(
-            [binary, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        with _sync_mutation_lock(args):
+            result = subprocess.run(
+                [binary, *args],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
     except Exception as exc:  # pragma: no cover - defensive
         return 1, "", str(exc)
     return result.returncode, result.stdout or "", result.stderr or ""

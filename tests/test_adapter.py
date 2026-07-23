@@ -2,6 +2,7 @@
 lookup, send/read composition.  Requires Hermes core on PYTHONPATH."""
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import os
 import sys
@@ -348,6 +349,76 @@ async def test_send_plain_uses_chat_id_not_guid(monkeypatch, tmp_path):
     assert result.message_id == "OUT"
     assert seen["args"][:3] == ["send", "--chat-id", "16"]
     assert "--chat-guid" not in seen["args"]
+
+
+@pytest.mark.asyncio
+async def test_send_rearms_bridge_and_retries_once_on_appleevent_disconnect(monkeypatch, tmp_path):
+    adapter = make_adapter(tmp_path, binary="imsg", auto_launch=True)
+    calls = []
+    results = [
+        (1, "", "Messages got an error: Connection is invalid. (-609)"),
+        (0, json.dumps({"status": "launched"}), ""),
+        (0, json.dumps({"guid": "RECOVERED"}), ""),
+    ]
+
+    async def fake_run(args):
+        calls.append(args)
+        return results.pop(0)
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    result = await adapter.send("16", "hello after recovery")
+
+    assert result.success is True
+    assert result.message_id == "RECOVERED"
+    assert [args[0] for args in calls] == ["send", "launch", "send"]
+
+
+@pytest.mark.asyncio
+async def test_bridge_launch_holds_mutation_transaction_through_settle(monkeypatch, tmp_path):
+    adapter = make_adapter(tmp_path, binary="imsg", auto_launch=True)
+    events = []
+
+    @asynccontextmanager
+    async def fake_transaction():
+        events.append("enter")
+        yield
+        events.append("exit")
+
+    async def fake_run(args):
+        events.append(args[0])
+        return 0, json.dumps({"status": "launched"}), ""
+
+    async def fake_sleep(_seconds):
+        events.append("settle")
+
+    monkeypatch.setattr("hermes_imsg_cli.adapter.cli.mutation_transaction", fake_transaction)
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    await adapter._launch_bridge()
+
+    assert events == ["enter", "launch", "settle", "exit"]
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_retry_indeterminate_appleevent_timeout(monkeypatch, tmp_path):
+    adapter = make_adapter(tmp_path, binary="imsg", auto_launch=True)
+    calls = []
+
+    async def fake_run(args):
+        calls.append(args)
+        return 1, "", "AppleEvent timed out. (-1712)"
+
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    result = await adapter.send("16", "do not duplicate")
+
+    assert result.success is False
+    assert [args[0] for args in calls] == ["send"]
 
 
 @pytest.mark.asyncio
