@@ -270,7 +270,10 @@ def _poll_vote_event(*, is_group=False, event="imessage.poll.voted"):
     }
 
 
-def test_poll_vote_events_are_disabled_by_default(tmp_path):
+def test_poll_vote_events_are_disabled_by_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("IMSG_POLL_VOTES_DM", raising=False)
+    monkeypatch.delenv("IMSG_POLL_VOTES_GROUP", raising=False)
+    monkeypatch.delenv("IMSG_POLL_UNVOTES", raising=False)
     adapter = make_adapter(tmp_path, allow_all=True)
     assert adapter._to_message_event(_poll_vote_event()) is None
     assert adapter._to_message_event(_poll_vote_event(is_group=True)) is None
@@ -960,7 +963,10 @@ def test_adapter_loads_rules_from_extra(tmp_path):
     assert adapter.rules[0].context == "dm"
 
 
-def test_adapter_defaults_when_no_rules(tmp_path):
+def test_adapter_defaults_when_no_rules(monkeypatch, tmp_path):
+    monkeypatch.delenv("IMSG_FALLBACK_ACTION", raising=False)
+    monkeypatch.delenv("IMSG_PARTICIPANT_VALIDATION", raising=False)
+    monkeypatch.delenv("IMSG_PARTICIPANT_CACHE_TTL", raising=False)
     adapter = make_adapter(tmp_path)
     assert adapter.rules == []
     assert adapter.fallback_action == "silent_drop"
