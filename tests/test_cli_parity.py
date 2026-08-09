@@ -194,7 +194,7 @@ async def test_run_imsg_rpc_terminates_then_kills_a_sigterm_ignoring_child(monke
     import time
 
     monkeypatch.setattr(cli, "DEFAULT_TERMINATE_GRACE", 0.2)
-    # `run_imsg_rpc` invokes ``binary rpc --json`` — swap in a script that
+    # `run_imsg_rpc` invokes ``binary rpc --json``; swap in a script that
     # behaves like a hung, SIGTERM-ignoring `imsg rpc` process instead of
     # trying to exec python as a literal "rpc" subcommand. Capture the real
     # create_subprocess_exec first so the fake doesn't recurse into itself.

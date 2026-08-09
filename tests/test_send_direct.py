@@ -11,7 +11,7 @@ import sys
 import pytest
 
 from hermes_imsg_cli import cli
-from hermes_imsg_cli.config import normalize_imsg_target
+from hermes_imsg_cli.config import normalize_imsg_target, parse_imsg_target
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +121,26 @@ def test_normalize_empty():
     assert normalize_imsg_target(None) == ("", False)
 
 
+@pytest.mark.parametrize(
+    ("raw", "kind", "value", "service", "normalized"),
+    [
+        ("chat_id:16", "chat_id", "16", None, "chat_id:16"),
+        ("chat_guid:iMessage;+;group", "chat_guid", "iMessage;+;group", None, "chat_guid:iMessage;+;group"),
+        ("chat_identifier:group", "chat_identifier", "group", None, "chat_identifier:group"),
+        ("imessage:+12025550105", "recipient", "+12025550105", "imessage", "imessage:+12025550105"),
+        ("sms:+12025550105", "recipient", "+12025550105", "sms", "sms:+12025550105"),
+        ("auto:user@example.com", "recipient", "user@example.com", "auto", "auto:user@example.com"),
+    ],
+)
+def test_parse_imsg_target_preserves_explicit_target_kind(
+    raw, kind, value, service, normalized
+):
+    target = parse_imsg_target(raw)
+    assert (target.kind, target.value, target.service) == (kind, value, service)
+    assert target.cli_target == normalized
+    assert normalize_imsg_target(raw) == (normalized, kind == "recipient")
+
+
 # ---------------------------------------------------------------------------
 # send_imsg_direct / _standalone_send composition (requires gateway)
 # ---------------------------------------------------------------------------
@@ -164,6 +184,38 @@ async def test_send_imsg_direct_bare_phone_normalized_to_to(monkeypatch, tmp_pat
     )
     assert result["success"] is True
     assert calls[0][:3] == ["send", "--to", "+12025550105"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("chat_guid:iMessage;+;group", ["send", "--chat-guid", "iMessage;+;group"]),
+        ("chat_identifier:group", ["send", "--chat-identifier", "group"]),
+        ("sms:+12025550105", ["send", "--to", "+12025550105"]),
+    ],
+)
+async def test_send_imsg_direct_preserves_explicit_targets(
+    monkeypatch, tmp_path, target, expected
+):
+    from hermes_imsg_cli.adapter import ImsgAdapter, send_imsg_direct
+
+    calls = []
+
+    async def fake_run(self, args):
+        calls.append(args)
+        return 0, json.dumps({"guid": "OUT"}), ""
+
+    monkeypatch.setattr(ImsgAdapter, "_run_imsg", fake_run)
+    result = await send_imsg_direct(
+        {"binary": "imsg", "state_file": str(tmp_path / "state.json")},
+        target,
+        "hello",
+    )
+    assert result["success"] is True
+    assert calls[0][:3] == expected
+    if target.startswith("sms:"):
+        assert calls[0][-3:] == ["--service", "sms", "--json"]
 
 
 @pytest.mark.asyncio

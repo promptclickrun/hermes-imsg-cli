@@ -64,4 +64,4 @@ Blue has three jobs only: primary actions, keyboard focus, and exact-route state
 
 ## Content authority
 
-Product copy must remain traceable to `README.md`, `SECURITY.md`, or documents under `docs/`. Exact-rowid routing, macOS requirements, the public and advanced capability boundary, installation behavior, security properties, and test evidence must not be broadened beyond those sources. A dated verification result must retain its date and report context. Links point to the repository or named upstream projects only.
+Product copy must remain traceable to `README.md`, `SECURITY.md`, or documents under `docs/`. Exact-rowid routing, macOS requirements, the basic and private capability boundary, installation behavior, security properties, and test evidence must not be broadened beyond those sources. A dated verification result must retain its date and report context. Links point to the repository or named upstream projects only.

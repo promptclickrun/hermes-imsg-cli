@@ -18,6 +18,27 @@ class FakeRunner:
         return self.responses.pop(0)
 
 
+class FakeRpcRunner:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    async def __call__(self, binary, request):
+        self.calls.append((binary, request))
+        return self.responses.pop(0)
+
+
+def action_status(*methods, selectors=None):
+    return json.dumps(
+        {
+            "advanced_features": True,
+            "v2_ready": True,
+            "rpc_methods": list(methods),
+            "selectors": selectors or {},
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_client_lists_ndjson_chats_and_preserves_schema():
     runner = FakeRunner([(0, '{"id":1,"unread_count":2}\n{"id":2}\n', "")])
@@ -115,3 +136,193 @@ async def test_client_advanced_actions_are_explicit_not_auto_launched():
     await client.react("42", "like")
     assert [call[1][0] for call in runner.calls] == ["read", "typing", "react"]
     assert all(call[1][0] != "launch" for call in runner.calls)
+
+
+@pytest.mark.asyncio
+async def test_client_edit_probes_then_executes_exact_cli_contract():
+    runner = FakeRunner(
+        [
+            (0, action_status("message.edit", selectors={"editMessage": True}), ""),
+            (0, json.dumps({"success": True}), ""),
+        ]
+    )
+    client = ImsgClient("imsg", runner=runner)
+    await client.edit("CHAT", "MSG", "updated", part_index=1)
+    assert [call[1] for call in runner.calls] == [
+        ["status", "--json"],
+        [
+            "edit",
+            "--chat",
+            "CHAT",
+            "--message",
+            "MSG",
+            "--new-text",
+            "updated",
+            "--bc-text",
+            "updated",
+            "--part",
+            "1",
+            "--json",
+        ],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_client_markdown_send_uses_rpc_formatting_ranges():
+    cli_runner = FakeRunner([])
+    rpc = FakeRpcRunner(
+        [
+            (
+                0,
+                json.dumps(
+                    {"jsonrpc": "2.0", "id": "hermes-send", "result": {"guid": "OUT"}}
+                ),
+                "",
+            )
+        ]
+    )
+    client = ImsgClient("imsg", runner=cli_runner, rpc_runner=rpc)
+    result = await client.send("16", "**bold**")
+    assert result["guid"] == "OUT"
+    request = rpc.calls[0][1]
+    assert request["method"] == "send"
+    assert request["params"] == {
+        "chat_id": 16,
+        "text": "bold",
+        "service": "auto",
+        "transport": "auto",
+        "formatting": [{"start": 0, "length": 4, "styles": ["bold"]}],
+    }
+    assert cli_runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_client_plain_send_preserves_explicit_target_kinds():
+    runner = FakeRunner(
+        [
+            (0, json.dumps({"guid": "GUID-SEND"}), ""),
+            (0, json.dumps({"guid": "IDENTIFIER-SEND"}), ""),
+            (0, json.dumps({"guid": "SMS-SEND"}), ""),
+        ]
+    )
+    client = ImsgClient("imsg", runner=runner)
+
+    await client.send("chat_guid:iMessage;+;group", "hello")
+    await client.send("chat_identifier:group-chat", "hello")
+    await client.send("sms:+12025550100", "hello")
+
+    assert runner.calls[0][1][:3] == [
+        "send",
+        "--chat-guid",
+        "iMessage;+;group",
+    ]
+    assert runner.calls[1][1][:3] == [
+        "send",
+        "--chat-identifier",
+        "group-chat",
+    ]
+    assert runner.calls[2][1][:3] == ["send", "--to", "+12025550100"]
+    assert runner.calls[2][1][-3:] == ["--service", "sms", "--json"]
+
+
+@pytest.mark.asyncio
+async def test_client_native_methods_use_their_advertised_commands(tmp_path):
+    attachment = tmp_path / "attachment.bin"
+    attachment.write_bytes(b"synthetic")
+    icon = tmp_path / "icon.png"
+    icon.write_bytes(b"synthetic-icon")
+    statuses = [
+        ("tapback", {}),
+        ("message.unsend", {"retractMessagePart": True}),
+        ("send.rich", {}),
+        ("send.attachment", {}),
+        ("group.rename", {}),
+        ("group.setIcon", {}),
+        ("group.addParticipant", {}),
+        ("group.removeParticipant", {}),
+        ("group.leave", {}),
+    ]
+    responses = []
+    for method, selectors in statuses:
+        responses.extend(
+            [
+                (0, action_status(method, selectors=selectors), ""),
+                (0, json.dumps({"success": True, "guid": method}), ""),
+            ]
+        )
+    runner = FakeRunner(responses)
+    client = ImsgClient("imsg", runner=runner)
+
+    await client.tapback("CHAT", "MSG", "like", remove=True, part_index=2)
+    await client.unsend("CHAT", "MSG", part_index=1)
+    await client.send_rich("CHAT", "**reply**", reply_to="MSG")
+    await client.send_attachment("CHAT", str(attachment), as_voice=True)
+    await client.rename_group("CHAT", "Family")
+    await client.set_group_icon("CHAT", str(icon))
+    await client.add_participant("CHAT", "+12025550101")
+    await client.remove_participant("CHAT", "+12025550101")
+    await client.leave_group("CHAT")
+
+    mutations = [call[1] for call in runner.calls if call[1][0] != "status"]
+    assert [args[0] for args in mutations] == [
+        "tapback",
+        "unsend",
+        "send-rich",
+        "send-attachment",
+        "chat-name",
+        "chat-photo",
+        "chat-add-member",
+        "chat-remove-member",
+        "chat-leave",
+    ]
+    assert "--remove" in mutations[0]
+    assert mutations[2][mutations[2].index("--format") + 1] == (
+        '[{"start":0,"length":5,"styles":["bold"]}]'
+    )
+    assert "--audio" in mutations[3]
+
+
+@pytest.mark.asyncio
+async def test_client_unsafe_rich_attachment_never_invokes_runner(tmp_path):
+    runner = FakeRunner([])
+    client = ImsgClient("imsg", runner=runner)
+    with pytest.raises(ImsgCommandError, match="regular file"):
+        await client.send_rich("CHAT", "caption", file=str(tmp_path))
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_client_native_capability_failure_prevents_mutation():
+    runner = FakeRunner(
+        [
+            (
+                0,
+                json.dumps(
+                    {
+                        "advanced_features": True,
+                        "v2_ready": True,
+                        "rpc_methods": [],
+                        "selectors": {},
+                    }
+                ),
+                "",
+            )
+        ]
+    )
+    client = ImsgClient("imsg", runner=runner)
+    with pytest.raises(ImsgCommandError, match="group.rename"):
+        await client.rename_group("CHAT", "Family")
+    assert [call[1] for call in runner.calls] == [["status", "--json"]]
+
+
+@pytest.mark.asyncio
+async def test_client_explicit_failure_object_is_not_success():
+    runner = FakeRunner(
+        [
+            (0, action_status("group.leave"), ""),
+            (0, json.dumps({"success": False, "error": "bridge refused"}), ""),
+        ]
+    )
+    client = ImsgClient("imsg", runner=runner)
+    with pytest.raises(ImsgCommandError, match="bridge refused"):
+        await client.leave_group("CHAT")

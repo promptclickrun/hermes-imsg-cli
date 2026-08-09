@@ -76,7 +76,7 @@ def _redact(text: Any) -> str:
 
     Applied to every string that can reach a log line or an error surfaced to
     the agent: subprocess stderr/stdout, exception text, and watch-loop
-    diagnostics.  Order matters — GUID/path patterns are replaced before the
+    diagnostics. Order matters: GUID/path patterns are replaced before the
     broader phone-number pattern so a numeric run inside a GUID is not
     partially matched first.
     """

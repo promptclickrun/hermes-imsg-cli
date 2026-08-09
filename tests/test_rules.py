@@ -1,4 +1,4 @@
-"""Rule engine tests — pure logic, no Hermes checkout required."""
+"""Rule engine tests: pure logic, no Hermes checkout required."""
 
 from hermes_imsg_cli.rules import (
     ImsgRule,
@@ -134,7 +134,7 @@ def test_csv_set_from_string_and_list():
 
 
 # ---------------------------------------------------------------------------
-# _redact() — phone/email/home-path/GUID sentinel tests
+# _redact(): phone/email/home-path/GUID sentinel tests
 # ---------------------------------------------------------------------------
 
 def test_redact_phone_and_email():

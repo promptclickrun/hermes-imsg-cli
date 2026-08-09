@@ -13,7 +13,9 @@ from typing import Any, Optional
 
 from . import cli
 from .attachments import validate_outbound_attachment_path
+from .capabilities import ImsgCapabilities, ImsgCapabilityError
 from .config import normalize_imsg_target
+from .formatting import extract_markdown_format_runs
 from .rules import _redact
 
 Runner = Callable[[str, list[str]], Awaitable[tuple[int, str, str]]]
@@ -106,6 +108,65 @@ class ImsgClient:
             raise ImsgCommandError(method, "returned a non-object result", exit_code=0)
         return result
 
+    @staticmethod
+    def _raise_if_mutation_failed(command: str, result: dict[str, Any]) -> None:
+        if (
+            result.get("ok") is False
+            or result.get("success") is False
+            or "error" in result
+        ):
+            detail = _redact(result.get("error") or "unspecified mutation error")
+            raise ImsgCommandError(
+                command, f"reported failure: {detail}", exit_code=0
+            )
+
+    async def _mutation_one(self, args: list[str]) -> dict[str, Any]:
+        result = await self._one(args)
+        self._raise_if_mutation_failed(args[0], result)
+        return result
+
+    async def _rpc_mutation_one(self, request: dict[str, Any]) -> dict[str, Any]:
+        result = await self._rpc_one(request)
+        self._raise_if_mutation_failed(str(request.get("method") or "rpc"), result)
+        return result
+
+    async def capabilities(self) -> ImsgCapabilities:
+        return ImsgCapabilities.from_status(await self.status())
+
+    async def _require_action(self, action: str) -> None:
+        capabilities = await self.capabilities()
+        try:
+            capabilities.require_action(action)
+        except ImsgCapabilityError as exc:
+            raise ImsgCommandError(action, exc.detail) from exc
+
+    @staticmethod
+    def _resolved_send_target(
+        target: str, service: Optional[str]
+    ) -> tuple[str, str, Optional[str]]:
+        raw = str(target or "").strip()
+        lowered = raw.lower()
+        prefixes = (
+            "chat_id:",
+            "chatid:",
+            "chat:",
+            "chat_guid:",
+            "chatguid:",
+            "guid:",
+            "chat_identifier:",
+            "chatidentifier:",
+            "chatident:",
+            "imessage:",
+            "sms:",
+            "auto:",
+        )
+        if lowered.startswith(prefixes):
+            return cli.parse_send_target(raw, service=service)
+        normalized, is_phone = normalize_imsg_target(raw)
+        return cli.parse_send_target(
+            normalized, is_phone=is_phone, service=service
+        )
+
     async def chats(self, *, limit: int = 20, unread_only: bool = False) -> list[dict[str, Any]]:
         return await self._objects(cli.build_chats_args(limit, unread_only))
 
@@ -151,18 +212,46 @@ class ImsgClient:
         region: Optional[str] = None,
         no_sms_fallback: bool = False,
     ) -> dict[str, Any]:
-        normalized, is_phone = normalize_imsg_target(target)
         if file:
             attachment_error = validate_outbound_attachment_path(file)
             if attachment_error:
                 raise ImsgCommandError("send", _redact(attachment_error))
+        target_flag, target_value, effective_service = self._resolved_send_target(
+            target, service
+        )
+        formatted = extract_markdown_format_runs(text)
+        formatting = formatted["ranges"]
+        if formatting:
+            target_names = {
+                "--chat-id": "chat_id",
+                "--chat-guid": "chat_guid",
+                "--chat-identifier": "chat_identifier",
+                "--to": "to",
+            }
+            target_kwargs = {target_names[target_flag]: target_value}
+            request = cli.build_send_rpc_request(
+                "hermes-send",
+                text=formatted["text"],
+                service=effective_service or "auto",
+                region=region,
+                file_path=file,
+                formatting=formatting,
+                **target_kwargs,
+            )
+            return await self._rpc_mutation_one(request)
         media = [(file, False)] if file else None
-        return await self._one(cli.build_plain_send_args(
-            normalized,
+        plain_target = {
+            "--chat-id": target_value,
+            "--chat-guid": f"chat_guid:{target_value}",
+            "--chat-identifier": f"chat_identifier:{target_value}",
+            "--to": target_value,
+        }[target_flag]
+        return await self._mutation_one(cli.build_plain_send_args(
+            plain_target,
             text,
-            is_phone=is_phone,
+            is_phone=target_flag == "--to",
             media_files=media,
-            service=service,
+            service=effective_service,
             region=region,
             no_sms_fallback=no_sms_fallback,
         ))
@@ -180,36 +269,144 @@ class ImsgClient:
     async def react(self, chat_id: str, reaction: str) -> dict[str, Any]:
         return await self._one(cli.build_react_args(chat_id, reaction), required=False)
 
+    async def tapback(
+        self,
+        chat_guid: str,
+        message_guid: str,
+        kind: str,
+        *,
+        remove: bool = False,
+        part_index: int = 0,
+    ) -> dict[str, Any]:
+        await self._require_action("react")
+        return await self._mutation_one(
+            cli.build_tapback_args(
+                chat_guid,
+                message_guid,
+                kind,
+                remove=remove,
+                part_index=part_index,
+            )
+        )
+
+    async def edit(
+        self,
+        chat_guid: str,
+        message_guid: str,
+        text: str,
+        *,
+        backwards_compatibility_message: Optional[str] = None,
+        part_index: int = 0,
+    ) -> dict[str, Any]:
+        await self._require_action("edit")
+        return await self._mutation_one(
+            cli.build_edit_args(
+                chat_guid,
+                message_guid,
+                text,
+                backwards_compatibility_message=backwards_compatibility_message,
+                part_index=part_index,
+            )
+        )
+
+    async def unsend(
+        self, chat_guid: str, message_guid: str, *, part_index: int = 0
+    ) -> dict[str, Any]:
+        await self._require_action("unsend")
+        return await self._mutation_one(
+            cli.build_unsend_args(
+                chat_guid, message_guid, part_index=part_index
+            )
+        )
+
+    async def send_rich(
+        self,
+        chat_guid: str,
+        text: str,
+        *,
+        reply_to: Optional[str] = None,
+        effect: Optional[str] = None,
+        part_index: int = 0,
+        file: Optional[str] = None,
+    ) -> dict[str, Any]:
+        if file:
+            attachment_error = validate_outbound_attachment_path(file)
+            if attachment_error:
+                raise ImsgCommandError("send-rich", _redact(attachment_error))
+        action = "sendWithEffect" if effect else "reply"
+        await self._require_action(action)
+        formatted = extract_markdown_format_runs(text)
+        return await self._mutation_one(
+            cli.build_rich_send_args(
+                chat_guid,
+                formatted["text"],
+                reply_to=reply_to,
+                effect=effect,
+                part_index=part_index,
+                file_path=file,
+                formatting=formatted["ranges"],
+            )
+        )
+
+    async def send_attachment(
+        self, chat_guid: str, file: str, *, as_voice: bool = False
+    ) -> dict[str, Any]:
+        attachment_error = validate_outbound_attachment_path(file)
+        if attachment_error:
+            raise ImsgCommandError("send-attachment", _redact(attachment_error))
+        await self._require_action("upload-file")
+        return await self._mutation_one(
+            cli.build_send_attachment_args(chat_guid, file, as_voice=as_voice)
+        )
+
+    async def rename_group(
+        self, chat_guid: str, display_name: str
+    ) -> dict[str, Any]:
+        await self._require_action("renameGroup")
+        return await self._mutation_one(
+            cli.build_chat_name_args(chat_guid, display_name)
+        )
+
+    async def set_group_icon(
+        self, chat_guid: str, file: str
+    ) -> dict[str, Any]:
+        attachment_error = validate_outbound_attachment_path(file)
+        if attachment_error:
+            raise ImsgCommandError("chat-photo", _redact(attachment_error))
+        await self._require_action("setGroupIcon")
+        return await self._mutation_one(cli.build_chat_photo_args(chat_guid, file))
+
+    async def add_participant(
+        self, chat_guid: str, address: str
+    ) -> dict[str, Any]:
+        await self._require_action("addParticipant")
+        return await self._mutation_one(
+            cli.build_chat_member_args("add", chat_guid, address)
+        )
+
+    async def remove_participant(
+        self, chat_guid: str, address: str
+    ) -> dict[str, Any]:
+        await self._require_action("removeParticipant")
+        return await self._mutation_one(
+            cli.build_chat_member_args("remove", chat_guid, address)
+        )
+
+    async def leave_group(self, chat_guid: str) -> dict[str, Any]:
+        await self._require_action("leaveGroup")
+        return await self._mutation_one(cli.build_chat_leave_args(chat_guid))
+
     async def _require_poll_capability(self, operation: str) -> None:
         """Fail before mutation unless the installed binary/bridge advertises polls."""
-        status = await self.status()
-        methods = status.get("rpc_methods")
-        method_values = {str(value) for value in methods} if isinstance(methods, list) else set()
-        aliases = {
-            "send": {"poll.send", "messages.poll.send"},
-            "vote": {"poll.vote", "messages.poll.vote"},
-            "unvote": {"poll.unvote", "polls.unvote", "messages.poll.unvote"},
+        action = {
+            "send": "poll",
+            "vote": "poll-vote",
+            "unvote": "poll-unvote",
         }[operation]
-        if not method_values.intersection(aliases):
-            canonical = {"send": "poll.send", "vote": "poll.vote", "unvote": "polls.unvote"}[operation]
-            raise ImsgCommandError(
-                "poll", f"installed imsg does not advertise {canonical}; upgrade to a poll-capable build"
-            )
-        selectors = status.get("selectors")
-        selector_values = selectors if isinstance(selectors, dict) else {}
-        selector = "pollPayloadMessage" if operation == "send" else "pollVoteMessage"
-        if selector_values.get(selector) is not True:
-            raise ImsgCommandError(
-                "poll",
-                f"bridge selector {selector} is unavailable; poll {operation} was not attempted",
-            )
+        await self._require_action(action)
 
     async def _poll_one(self, args: list[str]) -> dict[str, Any]:
-        result = await self._one(args)
-        if result.get("ok") is False or result.get("success") is False or "error" in result:
-            detail = _redact(result.get("error") or "unspecified poll error")
-            raise ImsgCommandError("poll", f"reported failure: {detail}", exit_code=0)
-        return result
+        return await self._mutation_one(args)
 
     async def send_poll(
         self,
@@ -231,7 +428,7 @@ class ImsgClient:
             comment=comment,
             reply_to=reply_to,
         )
-        return await self._rpc_one(request)
+        return await self._rpc_mutation_one(request)
 
     async def vote_poll(
         self,

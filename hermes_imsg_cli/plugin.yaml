@@ -1,7 +1,7 @@
 name: imsg-platform
 label: iMessage
 kind: platform
-version: 1.2.0
+version: 2.0.0
 description: >
   Native iMessage/SMS gateway adapter for Hermes Agent, backed by the local
   `imsg` CLI on macOS.  Registers the `imsg` platform via the stock plugin API
@@ -9,9 +9,10 @@ description: >
   the exact Messages chat rowid that produced them (no cross-chat guessing), with
   a declarative allow/deny/prompt/silent_drop rule engine, DM/group allowlists,
   participant + mention gating, identity aliases, read receipts, and out-of-
-  process (cron / send_message) delivery via a standalone sender, plus an
-  explicit agent-facing native poll create/vote/unvote tool with bridge
-  capability checks.
+  process (cron / send_message) delivery via a standalone sender. Native
+  formatting, threaded replies, tapbacks, effects, edit/unsend, files, polls,
+  and owner-gated group management use exact-target action tools with granular
+  private bridge capability checks.
 platforms:
   - macos
 # Surfaced in `hermes config` UI via the platform-plugin env var injector.
@@ -37,6 +38,10 @@ optional_env:
     description: "Comma-separated handles allowed to talk to the bot in group chats."
     prompt: "Allowed group handles (comma-separated)"
     password: false
+  - name: IMSG_GROUP_ACTION_ADMINS
+    description: "Comma-separated sender handles allowed to mutate group membership or metadata (defaults to IMSG_ALLOWED_USERS)."
+    prompt: "Group action admins (comma-separated)"
+    password: false
   - name: IMSG_ALLOWED_CHATS
     description: "Comma-separated Messages chat rowids allowed in group context."
     prompt: "Allowed chat rowids (comma-separated)"
@@ -56,6 +61,10 @@ optional_env:
   - name: IMSG_SEND_READ_RECEIPTS
     description: "Mark inbound chats read so senders see a read receipt (default: true)."
     prompt: "Send read receipts? (true/false)"
+    password: false
+  - name: IMSG_REACTION_NOTIFICATIONS
+    description: "Inbound reaction notifications: own, all, or off (default: own)."
+    prompt: "Reaction notifications (own/all/off)"
     password: false
   - name: IMSG_FALLBACK_ACTION
     description: "Action when no rule matches: silent_drop | deny | prompt | allow (default: silent_drop)."

@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -46,6 +47,7 @@ ENV_HOME_CHANNEL_NAME = "IMSG_HOME_CHANNEL_NAME"
 ENV_HOME_CHANNEL_THREAD_ID = "IMSG_HOME_CHANNEL_THREAD_ID"
 ENV_ALLOWED_USERS = "IMSG_ALLOWED_USERS"
 ENV_GROUP_ALLOWED_USERS = "IMSG_GROUP_ALLOWED_USERS"
+ENV_GROUP_ACTION_ADMINS = "IMSG_GROUP_ACTION_ADMINS"
 ENV_ALLOWED_CHATS = "IMSG_ALLOWED_CHATS"
 ENV_ALLOW_ALL_USERS = "IMSG_ALLOW_ALL_USERS"
 ENV_REQUIRE_MENTION = "IMSG_REQUIRE_MENTION"
@@ -63,6 +65,7 @@ ENV_COMMAND_TIMEOUT = "IMSG_COMMAND_TIMEOUT"
 ENV_POLL_VOTES_DM = "IMSG_POLL_VOTES_DM"
 ENV_POLL_VOTES_GROUP = "IMSG_POLL_VOTES_GROUP"
 ENV_POLL_UNVOTES = "IMSG_POLL_UNVOTES"
+ENV_REACTION_NOTIFICATIONS = "IMSG_REACTION_NOTIFICATIONS"
 
 INSTALL_HINT = (
     "Install the `imsg` CLI (`brew install steipete/tap/imsg`) on macOS and grant your "
@@ -71,6 +74,28 @@ INSTALL_HINT = (
 )
 
 _ALL_DIGITS_RE = re.compile(r"^\d+$")
+
+
+@dataclass(frozen=True)
+class ImsgTarget:
+    """Typed outbound target that retains the caller's explicit routing form."""
+
+    kind: str
+    value: str
+    service: Optional[str] = None
+    explicit: bool = False
+
+    @property
+    def is_phone(self) -> bool:
+        return self.kind == "recipient"
+
+    @property
+    def cli_target(self) -> str:
+        if self.kind in {"chat_id", "chat_guid", "chat_identifier"} and self.explicit:
+            return f"{self.kind}:{self.value}"
+        if self.kind == "recipient" and self.service:
+            return f"{self.service}:{self.value}"
+        return self.value
 
 
 # ---------------------------------------------------------------------------
@@ -186,13 +211,79 @@ def get_state_path(extra: Optional[dict] = None) -> Path:
 # E.164 target normalization (works around core's '+'-stripping gap)
 # ---------------------------------------------------------------------------
 
+def parse_imsg_target(
+    raw: Any,
+    *,
+    phone_min_digits: Optional[int] = None,
+    default_country_code: Optional[str] = None,
+) -> ImsgTarget:
+    """Parse a target without losing explicit chat or transport information."""
+    if phone_min_digits is None:
+        try:
+            phone_min_digits = int(
+                os.getenv(ENV_PHONE_MIN_DIGITS) or DEFAULT_PHONE_MIN_DIGITS
+            )
+        except ValueError:
+            phone_min_digits = DEFAULT_PHONE_MIN_DIGITS
+    if default_country_code is None:
+        default_country_code = (
+            os.getenv(ENV_DEFAULT_COUNTRY_CODE) or DEFAULT_COUNTRY_CODE
+        ).strip().lstrip("+")
+
+    target = str(raw or "").strip()
+    if not target:
+        return ImsgTarget(kind="empty", value="")
+    lowered = target.lower()
+
+    explicit_chat_prefixes = (
+        (("chat_id:", "chatid:", "chat:"), "chat_id"),
+        (("chat_guid:", "chatguid:", "guid:"), "chat_guid"),
+        (
+            ("chat_identifier:", "chatidentifier:", "chatident:"),
+            "chat_identifier",
+        ),
+    )
+    for prefixes, kind in explicit_chat_prefixes:
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                return ImsgTarget(
+                    kind=kind,
+                    value=target[len(prefix):].strip(),
+                    explicit=True,
+                )
+
+    for service in ("imessage", "sms", "auto"):
+        prefix = service + ":"
+        if lowered.startswith(prefix):
+            return ImsgTarget(
+                kind="recipient",
+                value=target[len(prefix):].strip(),
+                service=service,
+                explicit=True,
+            )
+
+    if target.startswith("+") or "@" in target:
+        return ImsgTarget(kind="recipient", value=target)
+
+    if _ALL_DIGITS_RE.match(target):
+        if len(target) >= phone_min_digits:
+            if len(target) == 10 and default_country_code:
+                target = f"+{default_country_code}{target}"
+            else:
+                target = f"+{target}"
+            return ImsgTarget(kind="recipient", value=target)
+        return ImsgTarget(kind="chat_id", value=target)
+
+    return ImsgTarget(kind="chat_id", value=target)
+
+
 def normalize_imsg_target(
     raw: Any,
     *,
     phone_min_digits: Optional[int] = None,
     default_country_code: Optional[str] = None,
 ) -> tuple[str, bool]:
-    """Normalise a send target and classify it as phone vs Messages chat rowid.
+    """Return the preserved CLI target and its recipient-vs-chat classification.
 
     Returns ``(target, is_phone)`` where ``is_phone`` selects ``imsg send --to``
     (E.164 / email handle) vs ``imsg send --chat-id`` (Messages chat rowid).
@@ -207,37 +298,12 @@ def normalize_imsg_target(
     (the reply-routing key) untouched.  Explicit ``+E.164`` and ``handle@...``
     email targets pass through as phone targets directly.
     """
-    if phone_min_digits is None:
-        try:
-            phone_min_digits = int(os.getenv(ENV_PHONE_MIN_DIGITS) or DEFAULT_PHONE_MIN_DIGITS)
-        except ValueError:
-            phone_min_digits = DEFAULT_PHONE_MIN_DIGITS
-    if default_country_code is None:
-        default_country_code = (
-            os.getenv(ENV_DEFAULT_COUNTRY_CODE) or DEFAULT_COUNTRY_CODE
-        ).strip().lstrip("+")
-
-    target = str(raw or "").strip()
-    if not target:
-        return target, False
-
-    # Explicit E.164 or email handle → phone/handle target.
-    if target.startswith("+"):
-        return target, True
-    if "@" in target:
-        return target, True
-
-    # All-digit → phone (long) or chat rowid (short).
-    if _ALL_DIGITS_RE.match(target):
-        if len(target) >= phone_min_digits:
-            if len(target) == 10 and default_country_code:
-                return f"+{default_country_code}{target}", True
-            return f"+{target}", True
-        # Short numeric → Messages chat rowid (reply-routing key).
-        return target, False
-
-    # Anything else (unexpected) → pass through as chat-id, no phone routing.
-    return target, False
+    parsed = parse_imsg_target(
+        raw,
+        phone_min_digits=phone_min_digits,
+        default_country_code=default_country_code,
+    )
+    return parsed.cli_target, parsed.is_phone
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +332,7 @@ def env_enablement_fn() -> Optional[dict]:
     for env_name, extra_key in (
         (ENV_ALLOWED_USERS, "allowed_handles"),
         (ENV_GROUP_ALLOWED_USERS, "group_allowed_handles"),
+        (ENV_GROUP_ACTION_ADMINS, "group_action_admins"),
         (ENV_ALLOWED_CHATS, "allowed_chats"),
     ):
         value = os.getenv(env_name, "").strip()
@@ -280,6 +347,9 @@ def env_enablement_fn() -> Optional[dict]:
         seed["auto_launch"] = _as_bool(os.getenv(ENV_AUTO_LAUNCH))
     if os.getenv(ENV_SEND_READ_RECEIPTS, "").strip():
         seed["send_read_receipts"] = _as_bool(os.getenv(ENV_SEND_READ_RECEIPTS))
+    reaction_notifications = os.getenv(ENV_REACTION_NOTIFICATIONS, "").strip().lower()
+    if reaction_notifications:
+        seed["reaction_notifications"] = reaction_notifications
     for env_name, extra_key in (
         (ENV_POLL_VOTES_DM, "poll_votes_dm"),
         (ENV_POLL_VOTES_GROUP, "poll_votes_group"),
@@ -351,6 +421,9 @@ def apply_yaml_config_fn(yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]:
     if extra.get("group_allowed_handles") is not None:
         seed["group_allowed_handles"] = extra["group_allowed_handles"]
         _bridge_env(ENV_GROUP_ALLOWED_USERS, _csv(extra["group_allowed_handles"]))
+    if extra.get("group_action_admins") is not None:
+        seed["group_action_admins"] = extra["group_action_admins"]
+        _bridge_env(ENV_GROUP_ACTION_ADMINS, _csv(extra["group_action_admins"]))
     if extra.get("allowed_chats") is not None:
         seed["allowed_chats"] = extra["allowed_chats"]
         _bridge_env(ENV_ALLOWED_CHATS, _csv(extra["allowed_chats"]))
@@ -360,6 +433,7 @@ def apply_yaml_config_fn(yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]:
         ("require_mention", ENV_REQUIRE_MENTION),
         ("auto_launch", ENV_AUTO_LAUNCH),
         ("send_read_receipts", ENV_SEND_READ_RECEIPTS),
+        ("reaction_notifications", ENV_REACTION_NOTIFICATIONS),
         ("fallback_action", ENV_FALLBACK_ACTION),
         ("participant_validation", ENV_PARTICIPANT_VALIDATION),
         ("participant_cache_ttl", ENV_PARTICIPANT_CACHE_TTL),

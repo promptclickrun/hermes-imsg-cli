@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install-local.sh — install the imsg platform plugin into the local Hermes
+# install-local.sh: install the imsg platform plugin into the local Hermes
 # instance by symlinking hermes_imsg_cli/ into ~/.hermes/plugins/ and enabling
 # it in ~/.hermes/config.yaml (comment-preserving, with a backup).
 #

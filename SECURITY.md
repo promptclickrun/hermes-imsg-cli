@@ -18,7 +18,7 @@ Please **do not** open a public GitHub issue for a suspected vulnerability.
    ("Security" tab → "Report a vulnerability"), or open a draft security
    advisory.
 2. If neither is available, open a normal issue asking a maintainer to open a
-   private channel — do not include exploit details, real phone numbers,
+   private channel; do not include exploit details, real phone numbers,
    chat rowids/GUIDs, message content, or file paths from your own Messages
    database in that issue.
 3. Include: affected file(s)/function(s), a minimal reproduction using
@@ -63,4 +63,4 @@ and its install/validation/CI scripts.
 
 Out of scope: the upstream `imsg` executable itself, macOS Messages.app,
 and the Hermes Agent core (`gateway`/`hermes_cli`) this plugin is loaded
-into — please report issues in those projects upstream.
+into. Please report issues in those projects upstream.

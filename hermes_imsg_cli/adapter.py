@@ -7,7 +7,7 @@ message.  No GUID resolution for routing, no participant matching, no
 cross-chat guessing.
 
 This module registers the platform via the stock plugin API and therefore does
-**not** require ``Platform.IMSG`` to exist in Hermes core — the platform name is
+**not** require ``Platform.IMSG`` to exist in Hermes core; the platform name is
 resolved through ``Platform("imsg")`` which upstream's ``Platform._missing_``
 turns into a dynamic member once the plugin has registered itself in the
 platform registry.
@@ -24,7 +24,7 @@ import shutil
 import sys
 import tempfile
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Any, Optional
 
 from gateway.config import PlatformConfig
@@ -36,6 +36,12 @@ from gateway.platforms.base import (
 )
 
 from . import cli
+from .actions import (
+    IMSG_ACTION_TOOL_SCHEMA,
+    IMSG_POLL_TOOL_SCHEMA,
+    handle_imsg_action_tool,
+    handle_imsg_poll_tool,
+)
 from .attachments import validate_outbound_attachment_path
 from .client import ImsgClient, ImsgCommandError
 from .config import (
@@ -56,6 +62,7 @@ from .config import (
     ENV_POLL_UNVOTES,
     ENV_POLL_VOTES_DM,
     ENV_POLL_VOTES_GROUP,
+    ENV_REACTION_NOTIFICATIONS,
     ENV_REQUIRE_MENTION,
     ENV_SEND_READ_RECEIPTS,
     INSTALL_HINT,
@@ -82,8 +89,9 @@ from .rules import (
 logger = logging.getLogger(__name__)
 
 PLATFORM_HINT = (
-    "You are chatting via iMessage/SMS. Messages render as plain text — do not "
-    "use markdown formatting. Keep responses concise and conversational. In "
+    "You are chatting via iMessage/SMS. Supported emphasis markup is converted "
+    "to native Messages formatting; avoid complex Markdown layouts. Keep "
+    "responses concise and conversational. In "
     "group chats, only reply when addressed. Reply routing is bound to the "
     "originating chat; never try to redirect a reply to a different chat."
 )
@@ -169,8 +177,8 @@ def _attachment_path(att: Any) -> Optional[str]:
     Only keys that upstream documents as resolvable filesystem locations are
     used: the converted-cache path (preferred, matching Hermes' converted-
     attachment consumption) and the original ``path``/``cached_path``.
-    ``filename``/``file`` are display names only — upstream does not promise
-    they resolve to anything on disk relative to any particular directory —
+    ``filename``/``file`` are display names only; upstream does not promise
+    they resolve to anything on disk relative to any particular directory,
     so they are intentionally never expanded into a path.  Treating a bare
     filename as if it were a path risked handing Hermes a nonexistent or,
     worse, an unintentionally relative path.  Missing/unresolvable
@@ -205,6 +213,8 @@ def _poll_event_kind(event: dict[str, Any]) -> Optional[str]:
         return "unvote"
     if kind == "vote" or event_name.endswith(".voted") or vote_type == "selected":
         return "vote"
+    if kind == "created" or event_name.endswith(".created"):
+        return "created"
     return None
 
 
@@ -223,6 +233,131 @@ def _format_poll_event(event: dict[str, Any], kind: str) -> str:
     if kind == "unvote":
         return f"Poll vote removed: {option or 'an option'}{target}"
     return f"Poll vote: {option or 'an option'}{target}"
+
+
+def _format_created_poll(event: dict[str, Any]) -> Optional[str]:
+    payload = event.get("poll")
+    if not isinstance(payload, dict):
+        return None
+    options = payload.get("options")
+    if not isinstance(options, list) or not options:
+        return None
+    votes = payload.get("votes")
+    tallies: dict[str, int] = {}
+    if isinstance(votes, list):
+        for vote in votes:
+            if not isinstance(vote, dict):
+                continue
+            if str(vote.get("event_type") or "").lower() == "removed":
+                continue
+            option_id = str(vote.get("option_id") or "").strip()
+            if option_id:
+                tallies[option_id] = tallies.get(option_id, 0) + 1
+    lines: list[str] = []
+    question = str(payload.get("question") or "").strip()
+    lines.append(f"Poll: {question}" if question else "Poll")
+    for index, option in enumerate(options, start=1):
+        if not isinstance(option, dict):
+            continue
+        text = str(option.get("text") or option.get("label") or "").strip()
+        if not text:
+            continue
+        option_id = str(option.get("id") or option.get("option_id") or "").strip()
+        raw_count = option.get("vote_count", option.get("count"))
+        try:
+            count = int(raw_count) if raw_count is not None else tallies.get(option_id, 0)
+        except (TypeError, ValueError):
+            count = tallies.get(option_id, 0)
+        suffix = f" ({count} {'vote' if count == 1 else 'votes'})"
+        lines.append(f"{index}. {text}{suffix}")
+    poll_guid = str(
+        payload.get("poll_guid")
+        or payload.get("original_guid")
+        or _event_guid(event)
+        or ""
+    ).strip()
+    if poll_guid:
+        lines.append(f"Poll ID: {poll_guid}")
+    return "\n".join(lines) if len(lines) > 1 else None
+
+
+_REACTION_LABELS = {
+    "love": "Love",
+    "heart": "Love",
+    "❤️": "Love",
+    "like": "Like",
+    "👍": "Like",
+    "dislike": "Dislike",
+    "👎": "Dislike",
+    "laugh": "Laugh",
+    "laughed": "Laugh",
+    "😂": "Laugh",
+    "emphasis": "Emphasis",
+    "emphasize": "Emphasis",
+    "‼️": "Emphasis",
+    "question": "Question",
+    "❓": "Question",
+}
+
+
+def _is_reaction_event(event: dict[str, Any]) -> bool:
+    if _as_bool(_event_get(event, "is_reaction", "isReaction", "is_tapback"), False):
+        return True
+    value = _event_get(event, "associated_message_type", "associatedMessageType")
+    try:
+        associated_type = int(value)
+    except (TypeError, ValueError):
+        return False
+    return 2000 <= associated_type < 4000
+
+
+def _reaction_context(event: dict[str, Any]) -> Optional[dict[str, Any]]:
+    if not _is_reaction_event(event):
+        return None
+    raw_guid = str(
+        _event_get(
+            event,
+            "reacted_to_guid",
+            "reactedToGuid",
+            "associated_message_guid",
+            "associatedMessageGuid",
+            default="",
+        )
+        or ""
+    ).strip()
+    target_guid = re.sub(r"^p(?::\d+)?/", "", raw_guid, flags=re.IGNORECASE)
+    reaction_type = str(
+        _event_get(event, "reaction_type", "reactionType", default="") or ""
+    ).strip()
+    emoji = str(
+        _event_get(event, "reaction_emoji", "reactionEmoji", default="") or ""
+    ).strip()
+    label = (
+        _REACTION_LABELS.get(reaction_type.lower())
+        or _REACTION_LABELS.get(emoji)
+        or reaction_type
+        or emoji
+        or "Reaction"
+    )
+    return {
+        "action": (
+            "removed"
+            if _event_get(event, "is_reaction_add", "isReactionAdd") is False
+            else "added"
+        ),
+        "label": label,
+        "emoji": emoji or None,
+        "target_guid": target_guid or None,
+        "target_is_from_me": _as_bool(
+            _event_get(
+                event,
+                "reacted_to_is_from_me",
+                "reactedToIsFromMe",
+                "target_is_from_me",
+            ),
+            False,
+        ),
+    }
 
 
 def _resolve_platform():
@@ -288,6 +423,16 @@ class ImsgAdapter(BasePlatformAdapter):
         self.send_read_receipts = _as_bool(
             extra.get("send_read_receipts", os.getenv(ENV_SEND_READ_RECEIPTS)), True
         )
+        reaction_notifications = str(
+            extra.get("reaction_notifications")
+            or os.getenv(ENV_REACTION_NOTIFICATIONS)
+            or "own"
+        ).strip().lower()
+        self.reaction_notifications = (
+            reaction_notifications
+            if reaction_notifications in {"own", "all", "off"}
+            else "own"
+        )
         poll_events = extra.get("poll_vote_events")
         poll_events = poll_events if isinstance(poll_events, dict) else {}
         self.poll_votes_dm = _as_bool(
@@ -314,7 +459,7 @@ class ImsgAdapter(BasePlatformAdapter):
             "include_unvotes": self.poll_unvotes,
             "chats": sorted(self.poll_vote_chats),
         }
-        # Rules engine — declarative access-control layer.
+        # Rules engine: declarative access-control layer.
         self.rules: list[ImsgRule] = parse_imsg_rules(extra.get("rules"))
         _fa = str(
             extra.get("fallback_action") or os.getenv(ENV_FALLBACK_ACTION) or "silent_drop"
@@ -352,6 +497,7 @@ class ImsgAdapter(BasePlatformAdapter):
         self._last_rowid = self._load_last_rowid()
         self._recent_message_guids: dict[str, str] = {}
         self._recent_chat_guids: dict[str, str] = {}
+        self._sent_message_guids: OrderedDict[str, str] = OrderedDict()
 
     # ------------------------------------------------------------------
     # Best-effort background tasks
@@ -363,7 +509,7 @@ class ImsgAdapter(BasePlatformAdapter):
         ``asyncio`` keeps only a weak reference to bare ``create_task`` results,
         so an unreferenced fire-and-forget task (a deny notice, a read receipt)
         can be garbage-collected before it completes.  We retain it in a set and
-        drop it — observing any exception — once it finishes.
+        drop it, observing any exception, once it finishes.
         """
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
@@ -455,7 +601,7 @@ class ImsgAdapter(BasePlatformAdapter):
         The cursor file lives under the Hermes home and its path/contents are
         not secret, but it is still local state written by an automation
         process; it is written to a same-directory temp file and
-        ``os.replace()``d into place (atomic on the same filesystem — no
+        ``os.replace()``d into place (atomic on the same filesystem, with no
         reader ever observes a partially written file) with restrictive
         permissions set before the rename so the final file is never briefly
         group/world readable.
@@ -494,15 +640,65 @@ class ImsgAdapter(BasePlatformAdapter):
         chat_id = _event_chat_id(event)
         if not chat_id:
             return
-        guid = _event_guid(event)
+        guid = None if _is_reaction_event(event) else _event_guid(event)
         chat_guid = _event_chat_guid(event)
         if guid:
             self._recent_message_guids[chat_id] = guid
         if chat_guid:
             self._recent_chat_guids[chat_id] = chat_guid
 
+    def _remember_sent_message(self, chat_id: str, message_id: Optional[str]) -> None:
+        if not message_id:
+            return
+        key = str(message_id)
+        self._sent_message_guids[key] = str(chat_id)
+        self._sent_message_guids.move_to_end(key)
+        while len(self._sent_message_guids) > 512:
+            self._sent_message_guids.popitem(last=False)
+
+    async def _remember_reaction_target_ownership(
+        self, event: dict[str, Any]
+    ) -> None:
+        if self.reaction_notifications != "own":
+            return
+        reaction = _reaction_context(event)
+        if not reaction:
+            return
+        target_guid = str(reaction.get("target_guid") or "")
+        chat_id = _event_chat_id(event)
+        if not target_guid or not chat_id:
+            return
+        if reaction.get("target_is_from_me"):
+            self._remember_sent_message(chat_id, target_guid)
+            return
+        if target_guid in self._sent_message_guids:
+            return
+        try:
+            messages = await self.get_history(
+                chat_id,
+                limit=1000,
+                attachments=False,
+                convert_attachments=False,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[imsg] reaction target ownership lookup failed: %s",
+                _redact(exc),
+            )
+            return
+        for message in messages:
+            message_guid = _event_guid(message)
+            if message_guid != target_guid:
+                continue
+            if _as_bool(
+                _event_get(message, "is_from_me", "from_me", "isFromMe"),
+                False,
+            ):
+                self._remember_sent_message(chat_id, target_guid)
+            return
+
     # ------------------------------------------------------------------
-    # Access control — legacy flat check + async rules engine
+    # Access control: legacy flat check and async rules engine
     # ------------------------------------------------------------------
 
     def _should_process(self, event: dict[str, Any]) -> bool:
@@ -797,10 +993,18 @@ class ImsgAdapter(BasePlatformAdapter):
             return
         await self._process_watch_event(event)
 
+    def _build_watch_args(self) -> list[str]:
+        """Build the supervised watch command, including structured tapbacks."""
+        return cli.build_watch_args(
+            self.debounce,
+            self._last_rowid,
+            reactions=True,
+        )
+
     async def _watch_loop(self) -> None:
         backoff = 1.0
         while self._running:
-            cmd = [self.binary, *cli.build_watch_args(self.debounce, self._last_rowid)]
+            cmd = [self.binary, *self._build_watch_args()]
             stderr_task: asyncio.Task | None = None
             started = time.monotonic()
             healthy = False
@@ -826,8 +1030,8 @@ class ImsgAdapter(BasePlatformAdapter):
                     if not line:
                         continue
                     # Reset the reconnect backoff only once the stream has
-                    # proven healthy by delivering a real line — not merely on
-                    # spawn success — so a start-then-exit crash loop still backs
+                    # proven healthy by delivering a real line, not merely on
+                    # spawn success, so a start-then-exit crash loop still backs
                     # off exponentially instead of respawning every second.
                     if not healthy:
                         healthy = True
@@ -903,6 +1107,7 @@ class ImsgAdapter(BasePlatformAdapter):
         self._remember_event_ids(event)
         if not await self._should_process_async(event):
             return
+        await self._remember_reaction_target_ownership(event)
         # Mark the chat read (fire-and-forget) so a slow IMCore read never
         # delays message handling.
         chat_id = _event_chat_id(event)
@@ -926,11 +1131,45 @@ class ImsgAdapter(BasePlatformAdapter):
         if not chat_id:
             return None
         text = _event_text(event)
+        metadata: dict[str, Any] = {}
+        reaction = _reaction_context(event)
         poll_kind = _poll_event_kind(event)
-        if poll_kind:
-            if not self._poll_event_enabled(event, poll_kind):
+        if reaction:
+            if self.reaction_notifications == "off":
                 return None
-            text = _format_poll_event(event, poll_kind)
+            target_guid = reaction.get("target_guid")
+            target_is_own = bool(
+                reaction.get("target_is_from_me")
+                or (
+                    target_guid
+                    and str(target_guid) in self._sent_message_guids
+                )
+            )
+            if self.reaction_notifications == "own" and not target_is_own:
+                return None
+            target = "your message" if target_is_own else "a message"
+            preposition = "from" if reaction["action"] == "removed" else "to"
+            text = (
+                f"Reaction: {reaction['label']} {reaction['action']} "
+                f"{preposition} {target}"
+            )
+            metadata = {
+                "imsg_event_type": "reaction",
+                "reaction": reaction,
+            }
+        elif poll_kind:
+            if poll_kind in {"vote", "unvote"} and not self._poll_event_enabled(
+                event, poll_kind
+            ):
+                return None
+            if poll_kind == "created":
+                text = _format_created_poll(event) or text
+            else:
+                text = _format_poll_event(event, poll_kind)
+            metadata = {
+                "imsg_event_type": "poll",
+                "poll": event.get("poll"),
+            }
         elif self.require_mention and _event_is_group(event):
             text = self._clean_mention_text(text)
         sender = _event_sender(event)
@@ -986,6 +1225,7 @@ class ImsgAdapter(BasePlatformAdapter):
             reply_to_message_id=_event_get(event, "reply_to_guid", "replyToGuid"),
             reply_to_text=_event_get(event, "reply_to_text", "replyToText"),
             reply_to_author_id=_event_get(event, "reply_to_sender", "replyToSender"),
+            metadata=metadata,
         )
 
     # ------------------------------------------------------------------
@@ -1045,7 +1285,7 @@ class ImsgAdapter(BasePlatformAdapter):
         """Search the local Messages database through ``imsg search``."""
         return await self._run_json_objects(cli.build_search_args(query, match=match, limit=limit))
 
-    def _poll_client(self) -> ImsgClient:
+    def _client(self) -> ImsgClient:
         async def runner(_binary: str, args: list[str]) -> tuple[int, str, str]:
             return await self._run_imsg(args)
 
@@ -1058,6 +1298,10 @@ class ImsgAdapter(BasePlatformAdapter):
             rpc_runner=rpc_runner,
             timeout=self.command_timeout,
         )
+
+    def _poll_client(self) -> ImsgClient:
+        """Compatibility alias for callers that exercise adapter poll methods."""
+        return self._client()
 
     async def _run_imsg_rpc(self, request: dict[str, Any]) -> tuple[int, str, str]:
         return await cli.run_imsg_rpc(self.binary, request)
@@ -1149,25 +1393,23 @@ class ImsgAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        """Send *content* to the exact Messages chat rowid *chat_id*.
-
-        Safety invariant: replies always route by rowid via plain
-        ``imsg send --chat-id``.  ``reply_to`` / ``metadata['chat_guid']``
-        are accepted only for ``BasePlatformAdapter`` interface compatibility
-        and are never used to select a destination chat.  A prior revision
-        used a caller/metadata-supplied ``chat_guid`` to attempt a threaded
-        ``send-rich`` reply; that let an untrusted or stale ``chat_guid``
-        redirect a reply to a different chat than the rowid it was invoked
-        with.  There is no safe way to accept a caller-controlled routing
-        override here, so rich/threaded replies are not attempted at all —
-        every reply, threaded or not, always plain-sends to ``chat_id``.
-        """
-        del reply_to, metadata  # accepted for interface compatibility only; never used for routing
+        """Send by exact rowid, using a thread only for trusted same-chat IDs."""
+        del metadata
         chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH)
         last_message_id = None
         continuations: list[str] = []
-        for chunk in chunks:
-            result = await self._send_plain(chat_id, chunk)
+        trusted_reply = self._trusted_reply_target(chat_id, reply_to)
+        for index, chunk in enumerate(chunks):
+            if index == 0 and trusted_reply:
+                chat_guid, message_guid = trusted_reply
+                result = await self._send_rich_reply(
+                    chat_id,
+                    chat_guid,
+                    message_guid,
+                    chunk,
+                )
+            else:
+                result = await self._send_plain(chat_id, chunk)
             if not result.success:
                 return result
             if last_message_id:
@@ -1179,39 +1421,91 @@ class ImsgAdapter(BasePlatformAdapter):
             continuation_message_ids=tuple(continuations),
         )
 
+    def _trusted_reply_target(
+        self, chat_id: str, reply_to: Optional[str]
+    ) -> Optional[tuple[str, str]]:
+        rowid = str(chat_id)
+        message_guid = str(reply_to or "").strip()
+        if not message_guid:
+            return None
+        if self._recent_message_guids.get(rowid) != message_guid:
+            return None
+        chat_guid = self._recent_chat_guids.get(rowid)
+        if not chat_guid:
+            return None
+        return chat_guid, message_guid
+
+    def _send_result_from_native(
+        self, chat_id: str, result: dict[str, Any]
+    ) -> SendResult:
+        raw_response = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
+        message_id = cli.extract_message_id(raw_response)
+        self._remember_sent_message(chat_id, message_id)
+        return SendResult(
+            success=True,
+            message_id=message_id,
+            raw_response=raw_response,
+        )
+
+    async def _send_rich_reply(
+        self,
+        chat_id: str,
+        chat_guid: str,
+        reply_to: str,
+        content: str,
+        media_files: Optional[list[tuple[str, bool]]] = None,
+    ) -> SendResult:
+        files = list(media_files or [])
+        if len(files) > 1:
+            return SendResult(
+                success=False,
+                error="imsg rich reply accepts one attachment per invocation",
+            )
+        file_path = files[0][0] if files else None
+        try:
+            result = await self._client().send_rich(
+                chat_guid,
+                content,
+                reply_to=reply_to,
+                file=file_path,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return SendResult(success=False, error=_redact(exc))
+        return self._send_result_from_native(str(chat_id), result)
+
     async def _send_plain(
         self,
         chat_id: str,
         content: str,
         media_files: Optional[list[tuple[str, bool]]] = None,
     ) -> SendResult:
-        if media_files:
-            for media_path, _is_voice in media_files:
-                attachment_error = validate_outbound_attachment_path(media_path)
-                if attachment_error:
-                    return SendResult(success=False, error=attachment_error)
-        try:
-            args = cli.build_plain_send_args(str(chat_id), content, media_files=media_files)
-            code, stdout, stderr = await self._run_imsg(args)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            return SendResult(success=False, error=_redact(exc))
-        if code != 0:
-            return SendResult(success=False, error=_redact(stderr or stdout or f"imsg exited {code}"))
-        # Fail closed: exit 0 alone is not success.  Upstream's `send --json`
-        # contract is one JSON confirmation object; malformed or empty stdout
-        # on a zero exit must never be reported as a successful send.
-        try:
-            values = cli.parse_json_output(stdout)
-        except cli.ImsgJSONError as exc:
-            return SendResult(success=False, error=_redact(str(exc)))
-        if not values or not isinstance(values[0], dict):
+        files = list(media_files or [])
+        if len(files) > 1:
             return SendResult(
                 success=False,
-                error="imsg send exited 0 but returned no JSON confirmation object",
+                error="imsg send accepts one attachment per invocation",
             )
-        return SendResult(success=True, message_id=cli.extract_message_id(stdout), raw_response=stdout)
+        file_path = files[0][0] if files else None
+        try:
+            result = await self._client().send(
+                str(chat_id),
+                content,
+                file=file_path,
+            )
+        except asyncio.CancelledError:
+            raise
+        except ImsgCommandError as exc:
+            if exc.exit_code == 0 and "returned no JSON object" in str(exc):
+                return SendResult(
+                    success=False,
+                    error="imsg send exited 0 but returned no JSON confirmation object",
+                )
+            return SendResult(success=False, error=_redact(exc))
+        except Exception as exc:
+            return SendResult(success=False, error=_redact(exc))
+        return self._send_result_from_native(str(chat_id), result)
 
     @staticmethod
     def _extract_sent_message_id(stdout: str) -> Optional[str]:
@@ -1228,6 +1522,16 @@ class ImsgAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         text = caption or ""
+        trusted_reply = self._trusted_reply_target(chat_id, reply_to)
+        if trusted_reply:
+            chat_guid, message_guid = trusted_reply
+            return await self._send_rich_reply(
+                chat_id,
+                chat_guid,
+                message_guid,
+                text,
+                media_files=[(file_path, False)],
+            )
         return await self._send_plain(chat_id, text, media_files=[(file_path, False)])
 
     async def send_image_file(
@@ -1261,7 +1565,19 @@ class ImsgAdapter(BasePlatformAdapter):
         metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        return await self._send_plain(chat_id, caption or "", media_files=[(audio_path, True)])
+        trusted_reply = self._trusted_reply_target(chat_id, reply_to)
+        if trusted_reply:
+            chat_guid, message_guid = trusted_reply
+            return await self._send_rich_reply(
+                chat_id,
+                chat_guid,
+                message_guid,
+                caption or "",
+                media_files=[(audio_path, True)],
+            )
+        return await self._send_plain(
+            chat_id, caption or "", media_files=[(audio_path, True)]
+        )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         duration = metadata.get("duration") if isinstance(metadata, dict) else None
@@ -1351,7 +1667,7 @@ async def send_imsg_direct(
     ``_send_plain``/upstream's one-file-per-command contract).  This is
     fail-fast: sending stops at the first failure.  To resolve the ambiguity
     of "some attachments already sent, then one failed", the failure result
-    is deterministic and explicit about exactly what happened — it reports
+    is deterministic and explicit about exactly what happened; it reports
     the failing index, how many attachments were attempted, and the
     already-confirmed message ids of every attachment sent before the
     failure, so a caller can never be left guessing whether a partial send
@@ -1406,7 +1722,7 @@ async def _standalone_send(
     media_files=None,
     force_document=False,
 ) -> dict[str, Any]:
-    """``PlatformEntry.standalone_sender_fn`` — deliver without a live adapter.
+    """``PlatformEntry.standalone_sender_fn``: deliver without a live adapter.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when cron/send_message
     runs out-of-process from the gateway.  ``thread_id`` / ``force_document`` are
@@ -1449,93 +1765,6 @@ def check_requirements() -> bool:
     return check_imsg_requirements(os.getenv(ENV_BINARY) or None, probe=False)
 
 
-IMSG_POLL_TOOL_SCHEMA = {
-    "name": "imsg_poll",
-    "description": (
-        "Explicitly create, vote, or selectively unvote a native Apple Messages poll. "
-        "Use the exact inbound chat_id for replies; never substitute a participant handle. "
-        "Requires an installed poll-capable imsg build and advertised bridge selectors."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["send", "vote", "unvote"]},
-            "chat_id": {"type": "string", "description": "Exact positive Messages chat rowid."},
-            "chat_guid": {"type": "string", "description": "Exact proactive chat GUID; mutually exclusive with chat_id."},
-            "question": {"type": "string", "description": "Poll question (send only)."},
-            "options": {"type": "array", "items": {"type": "string"}, "minItems": 2},
-            "comment": {"type": "string", "description": "Optional visible caption override (send only)."},
-            "reply_to": {"type": "string", "description": "Optional exact message GUID (send only)."},
-            "poll_guid": {"type": "string", "description": "Poll source message GUID (vote/unvote)."},
-            "option_id": {"type": "string", "description": "Exact option UUID."},
-            "option_index": {"type": "integer", "minimum": 1, "description": "1-based option number."},
-            "option": {"type": "string", "description": "Case-insensitive option text."},
-        },
-        "required": ["action"],
-        "additionalProperties": False,
-    },
-}
-
-
-def _poll_tool_client() -> ImsgClient:
-    binary = resolve_binary({})
-    try:
-        timeout = max(0.1, float(os.getenv(ENV_COMMAND_TIMEOUT) or 30.0))
-    except (TypeError, ValueError):
-        timeout = 30.0
-    return ImsgClient(binary, timeout=timeout)
-
-
-def _poll_tool_target(args: dict[str, Any]) -> tuple[str, Optional[str]]:
-    chat_id = args.get("chat_id")
-    chat_guid = args.get("chat_guid")
-    # Reuse the pure builder's exact-one/positive-rowid validation without
-    # invoking a subprocess. The placeholder payload is never sent.
-    cli.build_poll_send_args(
-        chat_id=chat_id, chat_guid=chat_guid, question="validation", options=["a", "b"]
-    )
-    return (str(chat_id).strip() if chat_id is not None else "", str(chat_guid).strip() if chat_guid else None)
-
-
-async def handle_imsg_poll_tool(args: dict[str, Any], **_kwargs) -> dict[str, Any]:
-    """Hermes tool dispatch for explicit poll mutations."""
-    action = str(args.get("action") or "").strip().lower()
-    if action not in {"send", "vote", "unvote"}:
-        return {"success": False, "error": "action must be send, vote, or unvote"}
-    try:
-        chat_id, chat_guid = _poll_tool_target(args)
-        client = _poll_tool_client()
-        if action == "send":
-            result = await client.send_poll(
-                chat_id,
-                str(args.get("question") or ""),
-                args.get("options") or [],
-                comment=args.get("comment"),
-                reply_to=args.get("reply_to"),
-                chat_guid=chat_guid,
-            )
-        else:
-            method = client.vote_poll if action == "vote" else client.unvote_poll
-            result = await method(
-                chat_id,
-                str(args.get("poll_guid") or ""),
-                option_id=args.get("option_id"),
-                option_index=args.get("option_index"),
-                option=args.get("option"),
-                chat_guid=chat_guid,
-            )
-        return {"success": True, "action": action, "chat_id": chat_id or None, "chat_guid": chat_guid, "result": result}
-    except asyncio.CancelledError:
-        raise
-    except ImsgCommandError as exc:
-        return {
-            "success": False, "action": action, "error": _redact(exc),
-            "exit_code": exc.exit_code,
-        }
-    except Exception as exc:
-        return {"success": False, "action": action, "error": _redact(exc)}
-
-
 def validate_config(config) -> bool:
     """Return True when the platform has enough to attempt a connection."""
     extra = getattr(config, "extra", {}) or {}
@@ -1547,7 +1776,7 @@ def is_connected(config) -> bool:
     """Enablement gate: True only when opted-in AND the binary is available.
 
     Prevents auto-enabling imsg merely because the binary happens to be
-    installed — the user must opt in via ``IMSG_ENABLED`` or by providing an
+    installed; the user must opt in via ``IMSG_ENABLED`` or by providing an
     explicit ``platforms.imsg`` config (which populates ``extra``).
     """
     if sys.platform != "darwin":
@@ -1589,14 +1818,13 @@ def build_entry_kwargs() -> dict:
         max_message_length=MAX_TEXT_LENGTH,
         # `pii_safe` is deliberately NOT set (defaults to False): core only
         # hashes/redacts a platform's session chat_id + user_id in the LLM
-        # prompt when pii_safe is True, and this plugin's own `imsg_poll`
-        # tool requires the agent to pass the *exact* positive rowid it was
-        # given (see IMSG_POLL_TOOL_SCHEMA) — a hashed chat_id would silently
-        # break every poll action for no privacy benefit, since routing
+        # prompt when pii_safe is True, and this plugin's native action tools
+        # require the agent to pass exact rowids and message references. A
+        # hashed chat_id would silently break native actions for no privacy
+        # benefit, since routing
         # already uses the untouched value from SessionSource regardless of
-        # what the prompt shows. Unlike WhatsApp/Signal/Telegram/BlueBubbles,
-        # imsg has an agent-facing tool whose correctness depends on the raw
-        # id, so opting into that redaction here would not be justified.
+        # what the prompt shows. The action contract depends on the raw id, so
+        # opting into that redaction here would not be justified.
         emoji="💬",
         allow_update_command=True,
         platform_hint=PLATFORM_HINT,
@@ -1614,6 +1842,16 @@ def _ensure_registered() -> None:
 def register(ctx) -> None:
     """Plugin entry point: called by the Hermes plugin system."""
     ctx.register_platform(**build_entry_kwargs())
+    ctx.register_tool(
+        name="imsg_action",
+        toolset="imsg",
+        schema=IMSG_ACTION_TOOL_SCHEMA,
+        handler=handle_imsg_action_tool,
+        check_fn=check_requirements,
+        is_async=True,
+        description=IMSG_ACTION_TOOL_SCHEMA["description"],
+        emoji="💬",
+    )
     ctx.register_tool(
         name="imsg_poll",
         toolset="imsg",

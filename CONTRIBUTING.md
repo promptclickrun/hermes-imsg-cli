@@ -47,11 +47,11 @@ scripts/validate.sh
    (`run_imsg` / `run_imsg_rpc`) so timeout and terminate-then-kill cleanup
    stay centralized.
 5. Any new log statement must not include raw watch lines, raw message
-   text/handles, or unredacted paths/GUIDs — run it through
+   text/handles, or unredacted paths/GUIDs; run it through
    `rules._redact()` or omit the content entirely.
 6. Add or update tests for behavior you change, including a regression test
    for any bug fix. Tests must never perform a live send, poll mutation,
-   reaction, or read against a real Messages account — mock the subprocess
+   reaction, or read against a real Messages account; mock the subprocess
    boundary (`ImsgAdapter._run_imsg` / `_run_imsg_rpc`, or `ImsgClient`'s
    `runner`/`rpc_runner`).
 7. Use only synthetic example data: phone numbers from the NANP reserved

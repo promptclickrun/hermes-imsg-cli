@@ -1,4 +1,4 @@
-"""Adapter tests — event conversion, access control, rule evaluation, participant
+"""Adapter tests: event conversion, access control, rule evaluation, participant
 lookup, send/read composition.  Requires Hermes core on PYTHONPATH."""
 
 import asyncio
@@ -102,7 +102,7 @@ def test_event_to_message_event_uses_chat_rowid_as_source_chat_id(tmp_path):
     message = adapter._to_message_event(event)
     assert message is not None
     assert message.source.platform is Platform("imsg")
-    # The reply-routing key is the exact inbound chat rowid — never the GUID.
+    # The reply-routing key is the exact inbound chat rowid, never the GUID.
     assert message.source.chat_id == "16"
     assert message.source.chat_id_alt == "any;+;abc"
     assert message.message_id == "MSG-GUID"
@@ -147,6 +147,151 @@ def _poll_vote_event(*, is_group=False, event="imessage.poll.voted"):
             "question": "Does this work?",
         },
     }
+
+
+def _reaction_event(*, target="BOT-MESSAGE", add=True, reaction="like"):
+    return {
+        "id": 102,
+        "chat_id": 3,
+        "chat_guid": "iMessage;-;+12025550101",
+        "guid": "REACTION-EVENT",
+        "sender": "+12025550101",
+        "sender_name": "Family Member",
+        "text": 'Liked "hello"',
+        "is_from_me": False,
+        "is_reaction": True,
+        "reaction_type": reaction,
+        "reaction_emoji": "👍" if reaction == "like" else None,
+        "is_reaction_add": add,
+        "reacted_to_guid": target,
+    }
+
+
+def _poll_created_event():
+    return {
+        "id": 103,
+        "chat_id": 3,
+        "chat_guid": "iMessage;-;+12025550101",
+        "guid": "POLL-MESSAGE",
+        "sender": "+12025550101",
+        "text": " ",
+        "is_from_me": False,
+        "poll": {
+            "kind": "created",
+            "event": "imessage.poll.created",
+            "poll_guid": "POLL-MESSAGE",
+            "question": "Dinner?",
+            "options": [
+                {"id": "PIZZA", "text": "Pizza"},
+                {"id": "SUSHI", "text": "Sushi"},
+            ],
+            "votes": [
+                {"option_id": "PIZZA", "event_type": "selected"},
+                {"option_id": "PIZZA", "event_type": "selected"},
+                {"option_id": "SUSHI", "event_type": "selected"},
+            ],
+        },
+    }
+
+
+def test_reaction_notifications_own_accepts_only_bot_target(tmp_path):
+    adapter = make_adapter(tmp_path, allow_all=True)
+    adapter._sent_message_guids["BOT-MESSAGE"] = "3"
+    accepted = adapter._to_message_event(_reaction_event())
+    assert accepted is not None
+    assert accepted.text == "Reaction: Like added to your message"
+    assert accepted.raw_message["reacted_to_guid"] == "BOT-MESSAGE"
+    assert accepted.metadata["imsg_event_type"] == "reaction"
+    assert adapter._to_message_event(_reaction_event(target="SOMEONE-ELSE")) is None
+
+
+def test_reaction_notifications_all_and_off_modes(tmp_path):
+    all_adapter = make_adapter(
+        tmp_path, allow_all=True, reaction_notifications="all"
+    )
+    removed = all_adapter._to_message_event(
+        _reaction_event(target="ANY", add=False, reaction="love")
+    )
+    assert removed is not None
+    assert removed.text == "Reaction: Love removed from a message"
+    off_adapter = make_adapter(
+        tmp_path, allow_all=True, reaction_notifications="off"
+    )
+    assert off_adapter._to_message_event(_reaction_event()) is None
+
+
+def test_reaction_notification_environment_and_invalid_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("IMSG_REACTION_NOTIFICATIONS", "all")
+    assert make_adapter(tmp_path).reaction_notifications == "all"
+    monkeypatch.setenv("IMSG_REACTION_NOTIFICATIONS", "invalid")
+    assert make_adapter(tmp_path).reaction_notifications == "own"
+
+
+@pytest.mark.asyncio
+async def test_process_reaction_own_resolves_historical_bot_target(
+    monkeypatch, tmp_path
+):
+    adapter = make_adapter(
+        tmp_path,
+        binary="imsg",
+        allowed_handles=["+12025550101"],
+        send_read_receipts=False,
+    )
+    delivered = []
+    calls = []
+
+    async def fake_run(args):
+        calls.append(args)
+        assert args[0] == "history"
+        return 0, json.dumps({
+            "guid": "BOT-MESSAGE",
+            "is_from_me": True,
+            "chat_id": 3,
+        }), ""
+
+    async def fake_handle(message):
+        delivered.append(message)
+
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+    await adapter._process_watch_event(_reaction_event())
+    assert calls[0][:5] == ["history", "--chat-id", "3", "--limit", "1000"]
+    assert len(delivered) == 1
+    assert delivered[0].text == "Reaction: Like added to your message"
+    assert adapter._sent_message_guids["BOT-MESSAGE"] == "3"
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_reaction_stops_before_ownership_lookup(monkeypatch, tmp_path):
+    adapter = make_adapter(
+        tmp_path,
+        binary="imsg",
+        allowed_handles=["+12025550199"],
+        send_read_receipts=False,
+    )
+    called = False
+
+    async def fake_run(args):
+        nonlocal called
+        called = True
+        return 0, "", ""
+
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    await adapter._process_watch_event(_reaction_event())
+    assert called is False
+
+
+def test_native_poll_renders_numbered_options_and_counts(tmp_path):
+    adapter = make_adapter(tmp_path, allow_all=True)
+    raw = _poll_created_event()
+    message = adapter._to_message_event(raw)
+    assert message is not None
+    assert "Poll: Dinner?" in message.text
+    assert "1. Pizza (2 votes)" in message.text
+    assert "2. Sushi (1 vote)" in message.text
+    assert "Poll ID: POLL-MESSAGE" in message.text
+    assert message.raw_message is raw
+    assert message.metadata["imsg_event_type"] == "poll"
 
 
 def test_poll_vote_events_are_disabled_by_default(tmp_path):
@@ -307,46 +452,142 @@ async def test_send_plain_uses_chat_id_not_guid(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_send_never_redirects_via_caller_supplied_chat_guid(monkeypatch, tmp_path):
-    """Regression for the rich-reply routing vulnerability: a caller/metadata
-    -supplied chat_guid (however it got there — a stale cache, a forged
-    reply payload) must never be able to redirect a reply to a different
-    chat than the rowid `send()` was invoked with. Every reply always plain-
-    sends by rowid; `send-rich` is never attempted."""
+async def test_send_uses_rich_reply_only_for_cached_same_chat_reference(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
-    # Simulate an attacker/forged-looking chat_guid for a DIFFERENT chat than
-    # the rowid being replied to, both via the recent-chat-guid cache and via
-    # explicit metadata — the two ways a chat_guid could previously reach
-    # the (now removed) rich-reply branch.
-    adapter._recent_chat_guids["16"] = "iMessage;-;+12025550197"
+    adapter._recent_chat_guids["16"] = "CHAT-16"
+    adapter._recent_message_guids["16"] = "MSG-16"
     seen_args = []
 
     async def fake_run(args):
         seen_args.append(args)
+        if args[0] == "status":
+            return 0, json.dumps({
+                "advanced_features": True,
+                "v2_ready": True,
+                "rpc_methods": ["send.rich"],
+                "selectors": {},
+            }), ""
         return 0, json.dumps({"guid": "OUT"}), ""
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
     result = await adapter.send(
         "16",
-        "hello",
-        reply_to="SOME-MESSAGE-GUID",
-        metadata={"chat_guid": "iMessage;-;+12025550198", "reply_to_message_id": "SOME-MESSAGE-GUID"},
+        "**reply**",
+        reply_to="MSG-16",
+        metadata={"chat_guid": "FORGED-OTHER-CHAT"},
     )
     assert result.success is True
-    # Exactly one subprocess call, and it is a plain --chat-id send to the
-    # exact rowid requested — never `send-rich`, never the attacker/cache
-    # supplied chat_guid.
-    assert len(seen_args) == 1
-    assert seen_args[0][:3] == ["send", "--chat-id", "16"]
-    assert seen_args[0][0] != "send-rich"
-    assert "iMessage;-;+12025550198" not in seen_args[0]
-    assert "iMessage;-;+12025550197" not in seen_args[0]
+    assert seen_args[0] == ["status", "--json"]
+    assert seen_args[1][:5] == ["send-rich", "--chat", "CHAT-16", "--text", "reply"]
+    assert seen_args[1][seen_args[1].index("--reply-to") + 1] == "MSG-16"
+    assert "FORGED-OTHER-CHAT" not in seen_args[1]
+    assert result.message_id == "OUT"
+    assert adapter._sent_message_guids["OUT"] == "16"
 
 
 @pytest.mark.asyncio
-async def test_adapter_no_longer_exposes_send_rich_reply():
-    """The vulnerable method itself is removed, not just unreferenced."""
-    assert not hasattr(ImsgAdapter, "_send_rich_reply")
+async def test_send_ignores_cross_chat_reply_reference(monkeypatch, tmp_path):
+    adapter = make_adapter(tmp_path, binary="imsg")
+    adapter._recent_chat_guids["16"] = "CHAT-16"
+    adapter._recent_message_guids["16"] = "MSG-16"
+    calls = []
+
+    async def fake_run(args):
+        calls.append(args)
+        return 0, json.dumps({"guid": "OUT"}), ""
+
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    result = await adapter.send(
+        "16",
+        "reply",
+        reply_to="MSG-OTHER",
+        metadata={"chat_guid": "FORGED-OTHER-CHAT"},
+    )
+    assert result.success is True
+    assert calls == [["send", "--chat-id", "16", "--text", "reply", "--json"]]
+
+
+@pytest.mark.asyncio
+async def test_safe_reply_capability_failure_does_not_retry_plain(monkeypatch, tmp_path):
+    adapter = make_adapter(tmp_path, binary="imsg")
+    adapter._recent_chat_guids["16"] = "CHAT-16"
+    adapter._recent_message_guids["16"] = "MSG-16"
+    calls = []
+
+    async def fake_run(args):
+        calls.append(args)
+        return 0, json.dumps({
+            "advanced_features": True,
+            "v2_ready": True,
+            "rpc_methods": [],
+            "selectors": {},
+        }), ""
+
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    result = await adapter.send("16", "reply", reply_to="MSG-16")
+    assert result.success is False
+    assert "send.rich" in result.error
+    assert calls == [["status", "--json"]]
+
+
+@pytest.mark.asyncio
+async def test_formatted_plain_send_uses_rowid_rpc_without_cli_retry(monkeypatch, tmp_path):
+    adapter = make_adapter(tmp_path, binary="imsg")
+    rpc_calls = []
+
+    async def fail_cli(args):
+        raise AssertionError(f"plain CLI must not run: {args}")
+
+    async def fake_rpc(request):
+        rpc_calls.append(request)
+        return 0, json.dumps({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {"guid": "FORMATTED"},
+        }), ""
+
+    monkeypatch.setattr(adapter, "_run_imsg", fail_cli)
+    monkeypatch.setattr(adapter, "_run_imsg_rpc", fake_rpc)
+    result = await adapter.send("16", "**bold**")
+    assert result.success is True
+    assert result.message_id == "FORMATTED"
+    assert rpc_calls[0]["params"]["chat_id"] == 16
+    assert rpc_calls[0]["params"]["text"] == "bold"
+    assert rpc_calls[0]["params"]["formatting"][0]["styles"] == ["bold"]
+
+
+@pytest.mark.asyncio
+async def test_reply_attachment_uses_same_chat_rich_send(monkeypatch, tmp_path):
+    attachment = tmp_path / "reply.txt"
+    attachment.write_text("synthetic")
+    adapter = make_adapter(tmp_path, binary="imsg")
+    adapter._recent_chat_guids["16"] = "CHAT-16"
+    adapter._recent_message_guids["16"] = "MSG-16"
+    calls = []
+
+    async def fake_run(args):
+        calls.append(args)
+        if args[0] == "status":
+            return 0, json.dumps({
+                "advanced_features": True,
+                "v2_ready": True,
+                "rpc_methods": ["send.rich"],
+                "selectors": {},
+            }), ""
+        return 0, json.dumps({"guid": "ATTACHMENT-REPLY"}), ""
+
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    result = await adapter.send_document(
+        "16", str(attachment), caption="file", reply_to="MSG-16"
+    )
+    assert result.success is True
+    assert calls[1][0] == "send-rich"
+    assert calls[1][calls[1].index("--file") + 1] == str(attachment)
+
+
+def test_adapter_watch_args_enable_reaction_rows(tmp_path):
+    adapter = make_adapter(tmp_path)
+    assert "--reactions" in adapter._build_watch_args()
 
 
 @pytest.mark.asyncio
@@ -636,6 +877,8 @@ async def test_bounded_command_timeout(monkeypatch, tmp_path):
 
 def _poll_status():
     return json.dumps({
+        "advanced_features": True,
+        "v2_ready": True,
         "selectors": {"pollPayloadMessage": True, "pollVoteMessage": True},
         "rpc_methods": ["poll.send", "poll.vote", "polls.unvote"],
     })
@@ -717,6 +960,15 @@ async def test_poll_tool_dispatches_explicit_action_and_rejects_bare_handle(monk
     calls = []
 
     class FakeClient:
+        async def group(self, chat_id):
+            return {"id": chat_id, "guid": "CHAT-16", "is_group": False}
+
+        async def chats(self, *, limit=20, unread_only=False):
+            return [{"id": 16, "guid": "iMessage;+;g", "is_group": True}]
+
+        async def history(self, chat_id, **kwargs):
+            return [{"guid": "P", "is_from_me": False}]
+
         async def send_poll(self, chat_id, question, options, **kwargs):
             calls.append(("send", chat_id, question, options, kwargs))
             return {"messageGuid": "P"}
@@ -729,7 +981,7 @@ async def test_poll_tool_dispatches_explicit_action_and_rejects_bare_handle(monk
             calls.append(("unvote", chat_id, poll_guid, kwargs))
             return {"messageGuid": "U"}
 
-    monkeypatch.setattr("hermes_imsg_cli.adapter._poll_tool_client", lambda: FakeClient())
+    monkeypatch.setattr("hermes_imsg_cli.actions._action_tool_client", lambda: FakeClient())
     result = await handle_imsg_poll_tool({
         "action": "send", "chat_id": "16", "question": "Q", "options": ["a", "b"]
     })

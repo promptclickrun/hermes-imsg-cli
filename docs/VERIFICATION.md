@@ -1,277 +1,252 @@
 # Verification report
 
-**Date:** 2026-07-15
-**Branch:** `security/gor-39-public-readiness`
-**Scope:** GOR-39 current-tree public-readiness security/privacy remediation.
-**Upstream audited (unchanged from prior review):** `openclaw/imsg@b5b7464bc748af482bfc3059b28d5dab0395da9e`
+Date: 2026-08-09
 
-This report supersedes the prior (2026-07-13) verification for the security/
-privacy remediation described below. It does not re-audit upstream `imsg`
-parity, which is unchanged; see `PARITY.md`.
+Scope: `imsg` platform release 2.0.0 in the isolated
+`imsg-full-parity` worktree
 
-## 2026-08-09 public-release addendum
+Mutation boundary: no live verification mutation was authorized
 
-**Branch:** `main`
-**Scope:** current-tree release review, fail-closed fixes, static project site,
-and GitHub Pages workflow readiness. Upstream parity was not re-audited.
+## Outcome
 
-The release review found and corrected six concrete implementation issues:
+The complete repository suite, plugin registration probe, site validator,
+privacy scan, byte compilation, isolated package build, wheel metadata check,
+read-only host capability probe, and diff whitespace check completed
+successfully.
 
-- runtime `__version__` was `1.0.0` while `pyproject.toml` and `plugin.yaml`
-  declared `1.2.0`;
-- a successful `imsg status --json` process with malformed or non-object JSON
-  was treated as available instead of failing closed;
-- the direct `ImsgClient.send()` API accepted empty stdout after exit 0 instead
-  of requiring a JSON confirmation object;
-- the direct client file-send path did not apply the regular-file and no-symlink
-  validation already used by adapter and standalone sends;
-- outbound attachment validation errors included the raw local file path when
-  surfaced through adapter or standalone send results;
-- plugin-owned rule, participant, read, launch, watch, state, and standalone
-  diagnostics could include known chat rowids or unredacted exception/config
-  values.
+The current host advertises the private methods and selectors needed for every
+implemented native action except edit. It advertises `message.edit`, but both
+supported edit selectors are false. The client therefore rejects edit before
+running its mutation command on this host.
 
-The review also corrected `ARCHITECTURE.md`, which described every native poll
-mutation as a short-lived CLI command even though creation uses one bounded
-`imsg rpc` request and vote/unvote use CLI commands. No other plugin behavior
-was changed.
+## Complete repository validation
 
-A self-contained static project site now lives under `site/`. Its deterministic
-validator checks semantic structure, local-only runtime assets, content and
-documentation links, accessibility primitives, the responsive contracts at
-1440x900, 768x1024, 390x844, and 320x700, the interaction implementation,
-visual constraints, and the Pages workflow. Existing CI runs this validator.
-The separate Pages workflow validates and uploads only `site/` from `main`,
-supports manual dispatch, uses full-SHA official action pins, keeps Pages read
-access on the build job, keeps Pages write and OIDC token access on the deploy
-job, and sets `enablement: false` so repository settings remain owner-controlled.
-
-Fresh final-tree evidence:
-
-```text
-scripts/validate.sh: 231 passed, 1 warning; registration and requirements probes PASS
-scripts/validate_site.py: PASS at 1440x900, 768x1024, 390x844, and 320x700
-scripts/privacy_scan.py: scanned 39 files; no findings; PASS
-shell syntax: PASS
-compileall: PASS
-JavaScript syntax: PASS
-workflow YAML parse: PASS
-wheel: hermes_imsg_cli-1.2.0-py3-none-any.whl built and metadata inspected
-git diff --check: PASS
-```
-
-The warning is the transitive Hermes environment's Python 3.13 `audioop`
-deprecation, not a plugin failure. The read-only requirements probe invoked
-`imsg status --json`; no message, reaction, read receipt, typing event, poll,
-SIP, TCC, launch, restart, deployment, or repository-setting mutation was
-performed. GitHub-hosted CI and Pages deployment remain unexecuted because this
-task did not commit, push, deploy, or change repository settings.
-
-## What changed in this pass
-
-- **Reply routing fix:** `send()` no longer attempts a threaded `send-rich`
-  reply. A caller/metadata-supplied `chat_guid` could previously redirect a
-  reply to a different chat than the rowid it was invoked with. Every reply
-  now always plain-sends by rowid (`ARCHITECTURE.md` → "Reply routing: why
-  rich/threaded replies are not attempted").
-- **Fail-closed send confirmation:** a zero exit code from `imsg send` is no
-  longer treated as success by itself; stdout must parse as a JSON
-  confirmation object.
-- **Outbound attachment safety:** symlinks and special files (directories,
-  FIFOs, sockets, device nodes) are rejected before `imsg send --file` runs.
-- **Inbound attachment path safety:** a bare `filename`/`file` attachment
-  field is no longer expanded into a usable path; only `converted_path`/
-  `path`/`cached_path` are used.
-- **Deterministic multi-attachment reporting:** a partial failure across
-  several attachments now reports `failed_index`, `attempted_attachments`,
-  and `succeeded_message_ids` instead of an ambiguous single error.
-- **Atomic, restrictive state persistence:** the resumable cursor file is
-  written to a temp file and `os.replace()`d into place with `0600`
-  permissions.
-- **Chat-id target validation:** `--chat-id` send targets are validated as
-  positive-integer rowids within a sane digit range (≤19 digits) before any
-  subprocess runs.
-- **Participant list type validation:** non-string/boolean entries in an
-  event's `participants` field are dropped rather than coerced.
-- **Bounded subprocess cleanup:** `cli.run_imsg`/`run_imsg_rpc` now
-  terminate a cancelled/timed-out child first, then bound the wait before
-  force-killing, instead of killing immediately.
-- **Logging hardening:** raw `imsg watch` lines are never logged (only their
-  length, on parse failure); `_redact()` now also strips home-directory
-  paths and GUID-like identifiers, not just phone numbers and emails; every
-  log call that could include a filesystem path or binary path is redacted.
-- **`pii_safe` removed:** the platform registry entry no longer sets
-  `pii_safe=True` — the agent-facing `imsg_poll` tool requires the LLM to
-  pass back the literal rowid it was given, so hashing chat/user ids for the
-  prompt would silently break polls for no privacy benefit.
-- **Personal data neutralized:** all phone-number examples across source,
-  tests, and docs now use the NANP reserved fictional range
-  `+1 202-555-01xx`; personal names in test fixtures/docs were replaced with
-  generic "Family Member"/"Owner" labels; the hardcoded personal
-  `/Users/<name>/...` path in `scripts/validate.sh` and `docs/VERIFICATION.md`
-  was replaced with `$HOME`-relative paths; unnecessary personal author
-  metadata was removed from `plugin.yaml`/`pyproject.toml` (the `gordie`
-  mention-pattern references remain — that is the product's own wake word,
-  not author attribution).
-- **New governance/CI:** `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`,
-  `scripts/privacy_scan.py`, and a pinned-action macOS CI workflow
-  (`.github/workflows/ci.yml`) were added.
-
-## Automated evidence
-
-All subprocess, filesystem, and Hermes boundaries in tests are mocked or use
-temporary files, except two deliberately-real-subprocess tests that verify
-bounded terminate-then-kill cleanup against short-lived, harmless local
-`python -c` child processes (never `imsg`, never live Messages). The suite
-performs no live sends, poll creation, votes, unvotes, or reactions.
-
-### Full suite
-
-```bash
-HERMES_SRC=/path/to/hermes-agent \
-  PYTHONPATH="/path/to/hermes-agent:$PWD" \
-  $HOME/.hermes/hermes-agent/venv/bin/python3 -m pytest -q
-```
-
-Result:
-
-```text
-........................................................................ [ 34%]
-........................................................................ [ 68%]
-..................................................................       [100%]
-210 passed, 6 warnings in 7.84s
-```
-
-The six warnings are transitive Hermes-environment deprecations (`pkg_resources`
-namespace declarations), not plugin failures.
-
-Coverage additions in this pass, on top of everything listed in the prior
-report (source-correct builders, NDJSON parsing, rowid routing, allowlists/
-rules, participant lookup, attachment conversion, standalone sends, reactions,
-read/typing, poll CLI/RPC builders and capability gates):
-
-- rich-reply routing regression tests (caller/cache-supplied `chat_guid` and
-  `reply_to` never reach `send-rich`; the method itself no longer exists);
-- fail-closed send confirmation (empty stdout, malformed JSON, non-object
-  JSON on exit 0);
-- outbound attachment safety (symlink, directory, FIFO, missing-file
-  rejection; regular-file acceptance) for both the live adapter and the
-  standalone sender;
-- inbound `filename`-only attachments are never expanded into a path, while
-  `converted_path`/`path` preference is preserved;
-- deterministic multi-attachment partial-failure reporting;
-- atomic state persistence with `0600` permissions, including cleanup of the
-  temp file on a simulated write failure;
-- participant list type validation (dict/list/int/bool/None entries dropped);
-- bounded terminate-then-kill subprocess cleanup for both `run_imsg` and
-  `run_imsg_rpc` against a real SIGTERM-ignoring child, and a real
-  cooperative child completing well inside the grace period;
-- `_redact()` sentinel tests for phone/email/home-path/GUID/chat-GUID
-  patterns, individually and combined;
-- watch-line handling never logs raw content on a JSON parse failure
-  (only a redacted length is logged), verified via `caplog`;
-- `chat_id` target syntax/range validation (non-numeric, zero, oversized,
-  whitespace-only, and max-valid-length rowids);
-- `pii_safe` is not set on the registry entry;
-- the repository-wide privacy/security scanner's own detection rules
-  (reserved-range phone numbers, personal home paths, secret shapes,
-  non-example email domains) plus an end-to-end pass over the actual
-  tracked+untracked repository content.
-
-### Repository validation and registration probe
+Command:
 
 ```bash
 scripts/validate.sh
 ```
 
-`scripts/validate.sh` no longer has a hardcoded personal default path; it
-resolves `HERMES_SRC` from the environment or `$HOME/.hermes/hermes-agent`.
+Exit status: `0`
 
-### Privacy/security scan
+Observed summary:
+
+```text
+305 passed, 1 warning in 2.70s
+plugin tools: imsg_action, imsg_poll
+requirements report: ok
+validate: PASS
+```
+
+The warning comes from the installed third-party Discord dependency importing
+Python's deprecated `audioop` module. It is not emitted by this plugin.
+
+The registration probe confirmed:
+
+- dynamic `Platform("imsg")` resolution without a built-in enum member
+- standalone sender registration
+- `IMSG_HOME_CHANNEL` cron delivery binding
+- YAML and environment configuration hooks
+- `imsg_action` followed by `imsg_poll`
+
+## Focused documentation and release checks
+
+Command:
 
 ```bash
+$HOME/.hermes/hermes-agent/venv/bin/python3 -m pytest \
+  tests/test_site_validation.py \
+  tests/test_release_safety.py \
+  tests/test_privacy_scan.py -q
+```
+
+Exit status: `0`
+
+Observed summary:
+
+```text
+27 passed in 0.15s
+```
+
+Additional commands:
+
+```bash
+python3 scripts/validate_site.py
 python3 scripts/privacy_scan.py
-```
-
-Result:
-
-```text
-privacy/security scan: scanned 29 file(s); no findings; PASS
-```
-
-### Syntax and package build
-
-```bash
-$HOME/.hermes/hermes-agent/venv/bin/python3 -m compileall -q hermes_imsg_cli tests scripts
-bash -n scripts/validate.sh scripts/install-local.sh
-$HOME/.hermes/hermes-agent/venv/bin/python3 -m pip wheel . --no-deps --no-build-isolation -w /tmp/hermes-imsg-wheel
-```
-
-Result: byte-compilation and both shell scripts pass syntax checks with no
-output. Wheel build:
-
-```text
-Successfully built hermes-imsg-cli
-Created wheel: hermes_imsg_cli-1.2.0-py3-none-any.whl
-```
-
-The build was run twice in this session to confirm reproducible success;
-the SHA-256 differs between runs (`3dab75c1...506660d` and `a45d9b8e...bd26ca7`
-were both observed) because wheel archives embed file timestamps, not
-because content changed — verified by re-inspecting `METADATA` after each
-build. Wheel metadata was inspected directly and contains no personal
-author metadata, no non-reserved phone numbers, and correct `Project-URL`
-entries pointing at the public repository.
-
-### Diff hygiene
-
-```bash
+$HOME/.hermes/hermes-agent/venv/bin/python3 -m compileall -q \
+  hermes_imsg_cli scripts tests
 git diff --check
 ```
 
-Result: exit 0, no whitespace errors (two trailing-blank-line issues
-introduced while adding tests in this pass were found and fixed by this same
-check before finalizing).
+Each command exited `0`. The site validator covered the deterministic contracts
+for `1440x900`, `768x1024`, `390x844`, and `320x700`. The privacy scan reported:
 
-### CI
+```text
+privacy/security scan: scanned 47 file(s); no findings; PASS
+```
 
-`.github/workflows/ci.yml` runs on `macos-14` with `actions/checkout` and
-`actions/setup-python` pinned by full commit SHA (not a mutable tag), and
-executes: `pytest -q`, `compileall`, a shell-script syntax check, the privacy/
-security scanner, a PR-diff whitespace check, and a wheel build (uploaded as
-an artifact). This was validated for YAML syntax and pinned-SHA correctness
-(each SHA resolved against the GitHub API to confirm it is a real commit on
-the expected tag) but has not run on GitHub's hosted runners as part of this
-local session — no commit/push was made per the task's constraints.
+Byte compilation and `git diff --check` produced no output.
 
-## Read-only live prerequisite probe
+## Package build
 
-No message, reaction, typing indicator, read receipt, SIP change, launch,
-restart, or TCC action was performed. No native poll, caption, vote, or
-unvote was performed. No live `imsg` binary was invoked in this session; all
-subprocess boundaries are mocked or use short-lived, harmless local
-`python -c` processes for the terminate-then-kill regression tests.
+The requested Hermes-venv command could not start because that environment
+does not contain the `build` module:
 
-## Environment-gated verification left to operator
+```text
+$HOME/.hermes/hermes-agent/venv/bin/python3: No module named build
+```
 
-Unchanged from the prior report — these require a live macOS Messages
-account and are intentionally not automated. See `OPERATIONS.md` for the
-exact operator-only sequences (inbound DM/group tests, attachment/reaction
-checks, and the poll create/vote/unvote sequence).
+An isolated `pipx` invocation was then used without modifying the Hermes
+environment:
 
-## Known risks / non-blockers
+```bash
+pipx run build
+```
 
-- Threaded/rich replies are no longer available at all (previously an
-  environment-blocked best-effort feature with a plain fallback). This is an
-  intentional, permanent trade of a cosmetic feature for a routing guarantee
-  that cannot be subverted by any input the adapter does not itself control.
-- `pii_safe` is not set, so this platform's session context is not eligible
-  for the core PII-redaction path other built-in bridge platforms use; this
-  is intentional (see above) and does not weaken this plugin's own routing/
-  redaction guarantees, which are independent of that core mechanism.
-- CI has been authored and locally validated (YAML syntax, pinned SHA
-  authenticity) but not yet exercised on GitHub's infrastructure, since no
-  commit/push was made in this session.
-- No OpenClaw adapter, private IMCore implementation, core patch, service
-  change, credential change, restart, release, commit, push, or merge was
-  made.
+Exit status: `0`
+
+Observed artifacts:
+
+```text
+dist/hermes_imsg_cli-2.0.0.tar.gz
+dist/hermes_imsg_cli-2.0.0-py3-none-any.whl
+```
+
+Wheel metadata inspection confirmed:
+
+```text
+Name: hermes-imsg-cli
+Version: 2.0.0
+License: MIT
+Requires-Python: >=3.10
+```
+
+The source archive contains `actions.py`, `capabilities.py`, and
+`formatting.py`. Setuptools emitted a forward-looking warning that the current
+TOML license table form is deprecated after 2027-02-18. The build succeeded and
+the artifact metadata is correct.
+
+## Version and action contract audit
+
+A read-only Python audit confirmed:
+
+```text
+version: 2.0.0
+requires-python: >=3.10
+native actions: react, edit, unsend, reply, sendWithEffect, upload-file,
+  renameGroup, setGroupIcon, addParticipant, removeParticipant, leaveGroup,
+  poll, poll-vote, poll-unvote
+action count: 14
+```
+
+The runtime package version, project metadata, and plugin manifest all report
+`2.0.0`. The tool schema action enum is identical to the capability model's
+action list.
+
+`docs/PARITY.md` contains the required supported-functionality sections for
+messaging, native actions, polls, groups, inbound events, policy, recovery,
+requirements, and verification. It contains no comparison ledger or status
+table.
+
+## Read-only host capability probe
+
+Commands:
+
+```bash
+/opt/homebrew/bin/imsg --version
+/opt/homebrew/bin/imsg status --json |
+  jq '{advanced_features,v2_ready,bridge_version,rpc_methods,selectors,message}'
+/opt/homebrew/bin/imsg rpc --help
+```
+
+All commands exited `0`. Sanitized result:
+
+```text
+imsg version: 0.13.0
+advanced_features: true
+v2_ready: true
+bridge_version: 2
+message: Connected to Messages.app. IMCore features available.
+```
+
+Relevant advertised methods:
+
+```text
+send
+send.rich
+send.attachment
+tapback
+typing
+read
+message.edit
+message.unsend
+poll.send
+messages.poll.send
+poll.vote
+messages.poll.vote
+poll.unvote
+polls.unvote
+messages.poll.unvote
+group.rename
+group.setIcon
+group.addParticipant
+group.removeParticipant
+group.leave
+```
+
+Relevant selectors:
+
+```text
+editMessage: false
+editMessageItem: false
+retractMessagePart: true
+pollPayloadMessage: true
+pollVoteMessage: true
+```
+
+`imsg rpc --help` confirmed the stdin/stdout JSON-RPC command and its local
+database, log-level, verbosity, and JSON output flags.
+
+This is capability evidence, not mutation evidence. No message content or chat
+history was read during the final probe.
+
+## Test isolation incident
+
+During early test-driven development, one formatted-send test supplied a fake
+RPC runner but left the default command runner in place. Before failing after
+roughly 27 seconds, it may have attempted this real command against local rowid
+16:
+
+```text
+imsg send --chat-id 16 --text **bold**
+```
+
+The possibility was disclosed immediately. No private chat was read afterward
+to determine whether Messages accepted it. The test harness was corrected so
+every mutation test uses fake runners, and all subsequent automated runs stayed
+inside that boundary.
+
+## Live mutation checks not performed
+
+No final verification command:
+
+- sent a live iMessage or SMS
+- marked a real chat read or emitted a typing indicator
+- added or removed a tapback
+- edited or unsent a message
+- sent a native threaded reply or effect
+- uploaded an attachment
+- created, voted on, or removed a vote from a poll
+- renamed a group, changed its icon, changed membership, or left it
+- launched or injected the private bridge
+- changed SIP, TCC, or Messages sign-in state
+
+The automated suite verifies the command and RPC contracts with in-memory
+runners and temporary files. Live behavior remains an operator-controlled test
+against a deliberately selected disposable conversation.
+
+## Repository state
+
+All changes remain unstaged in the isolated worktree. No commit, push, pull
+request, Pages deployment, Hermes restart, or live configuration change was
+performed.

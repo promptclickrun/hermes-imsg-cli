@@ -2,78 +2,102 @@
 
 ## Scope
 
-This plugin consumes the current OpenClaw `imsg` executable; it is not an OpenClaw channel adapter and does not replace OpenClaw configuration. Migration means pointing Hermes at the same local CLI while expressing policy in Hermes.
+The plugin uses the locally installed `imsg` executable and keeps platform
+policy in Hermes. Upgrading the plugin does not modify Messages.app, TCC, SIP,
+the `imsg` package, or the Hermes core checkout.
 
-## From the original standalone Hermes plugin
+## Preserved behavior
 
-The release is additive and preserves:
+- platform name `imsg` and plugin name `imsg-platform`
+- exact rowid routing for ordinary inbound replies
+- legacy flat allowlists and synthesized rules
+- default `silent_drop`, mention behavior, identity aliases, read receipts,
+  and bridge re-arm setting
+- state file format containing `last_rowid`
+- cron and standalone sender with the stock Hermes phone-target workaround
+- text, document, image, video, and voice platform methods
+- chats, group, history, search, and native NDJSON parsing
 
-- platform name `imsg` and plugin name `imsg-platform`;
-- exact rowid inbound reply routing;
-- legacy flat allowlists and synthesized rules;
-- default `silent_drop`, mention behavior, aliases, read receipts, bridge auto-launch setting;
-- state file format (`last_rowid` remains readable);
-- cron/standalone sender and E.164 workaround;
-- text, document, image, video, and voice methods.
+## Added behavior
 
-Behavior strengthened:
+- native styled text with UTF-16 formatting ranges
+- trusted same-chat threaded replies and reply attachments
+- structured inbound reaction delivery with `own`, `all`, and `off` modes
+- exact-message tapback add and remove, including unnamed safe removal
+- message edit and unsend with bot-authorship checks
+- expressive send effects with canonical Apple effect identifiers
+- capability-gated file and voice actions
+- native poll creation, vote, and selective unvote
+- native group rename, icon, membership, and leave operations
+- authenticated owner gating for group mutations from messaging surfaces
+- a unified `imsg_action` tool plus the compatible `imsg_poll` tool
+- per-action method and selector checks from `imsg status --json`
 
-1. Strict participant validation now uses real current syntax: `group --chat-id`, replacing invalid `chats --chat-id`.
-2. Batch JSON is parsed as upstream NDJSON; compatibility arrays are still accepted.
-3. Unresolved `chat_id=0` watch rows fail closed instead of looking like a DM.
-4. Converted attachment paths are preferred and `missing=true` files are not handed to Hermes.
-5. Unknown/custom public reactions are rejected before any UI automation.
-6. Bounded read APIs now cover chats, group, history, and search without narrowing upstream fields.
-7. Subprocess and parser failures are structured/redacted rather than leaking payload lines.
+The action layer is additive. Existing plain sends remain available when the
+private bridge is not configured.
 
-One deliberate CLI-builder correction: `build_chats_args` now takes `limit`/`unread_only`, matching upstream. Internal callers that previously passed a chat ID must use `build_group_args(chat_id)`. This was never a working upstream command and is the only source-level correction likely to affect code importing the helper directly.
+## Strengthened behavior
 
-## From direct `imsg` scripts
+1. Strict participant validation uses `group --chat-id`.
+2. Command JSON is parsed as NDJSON while one compatibility array is accepted.
+3. Missing and zero chat rowids fail closed.
+4. Converted attachment paths are preferred and `missing=true` files are not
+   handed to Hermes.
+5. Outbound paths must be regular files.
+6. A send or mutation requires structured JSON confirmation.
+7. Raw watch lines and private payloads are excluded from logs.
+8. The recovery cursor is atomically persisted with owner-only permissions.
+9. Native action references are verified inside the selected conversation.
+10. Caller metadata cannot redirect ordinary or threaded replies.
 
-| Direct script concept | Hermes equivalent |
-|---|---|
-| Run one `watch` per integration | One supervised adapter watch with persisted rowid. |
-| Route by participant/handle | Inbound replies route by exact positive `chat_id`; explicit outbound handles only. |
-| Script-side allowlist | `allowed_handles`, `group_allowed_handles`, `allowed_chats`, or ordered `rules`. |
-| Parse `jq -s` arrays | Plugin parses NDJSON natively and preserves objects. |
-| Store cursor | `IMSG_STATE_FILE` or profile-local `imsg_state.json`. |
-| Call send from cron | `deliver=imsg` / `IMSG_HOME_CHANNEL` standalone sender. |
-| Launch bridge before every action | Optional `auto_launch`; public-only deployments should disable it. |
-| Treat every reaction as input | Gateway does not enable reaction watch by default, preventing tapback-triggered agent replies. |
+## From direct scripts
 
-Keep unsupported advanced mutation scripts direct. The Hermes plugin intentionally does not expose edit/unsend/group-management/stickers/private account actions. Native polls are now exposed through the explicit `imsg_poll` tool for create, vote, and selective unvote, but remain environment-gated by the installed `imsg` binary and bridge capabilities.
+| Direct script concept | Plugin behavior |
+| --- | --- |
+| Run and restart `watch` | One supervised process resumes from the persisted rowid. |
+| Route by participant or handle | Ordinary inbound replies use the exact source rowid. |
+| Maintain a script allowlist | Use direct-message, group, chat, participant, mention, or ordered rules. |
+| Parse `jq -s` arrays | The plugin parses NDJSON and preserves unknown object fields. |
+| Store a cursor | Use `IMSG_STATE_FILE` or the profile-local state file. |
+| Send from cron | Use `deliver=imsg` and `IMSG_HOME_CHANNEL`. |
+| Invoke native mutations | Use `imsg_action` with one exact target. |
+| Create or vote on polls | Use `imsg_action` or the compatible `imsg_poll` tool. |
 
-## Hermes versus upstream semantics
+Scripts that use native account, sticker, scheduled-message, or database
+maintenance commands remain separate operator tools. They are outside the
+Hermes messaging action contract.
 
-- Upstream `--json` means one object per line, not a single array. Hermes APIs return Python lists after streaming parse.
-- Upstream `react` targets the newest incoming message. Hermes may use a targeted bridge tapback only when trusted recent GUIDs exist; otherwise the public limitation applies.
-- Upstream accepts rowid, identifier, GUID, or handle for sends. Hermes inbound replies accept only the captured rowid for safety. Explicit standalone sends may use phone/email handles.
-- Upstream attachment conversion is a cache hook. Hermes consumes the converted path when present but neither uploads nor deletes it.
-- Upstream read/typing commands are present even when the bridge is unavailable. Hermes treats failures as best-effort and does not claim capability. Upstream's `send-rich` is present too, but Hermes never calls it — see the reply-routing decision in `ARCHITECTURE.md`.
-- Upstream JSON-RPC is designed for a long-running integration. Hermes already owns process lifecycle, access control, session routing, and cron, so it uses the CLI/NDJSON surface instead of nesting another adapter.
+## Installed executable compatibility
 
-## Version compatibility
+Basic watch, history, text, and file behavior depends on the command flags
+accepted by the installed executable. Advanced behavior additionally depends
+on private bridge state and the granular methods and selectors in
+`status --json`.
 
-The source review targets commit `b5b7464…` (0.13.1 development tree). The deterministic builders use options present by 0.11.0 for normal gateway operation: chats/group/history/watch/search/send/react/status/read/typing/tapback. A `send-rich` builder exists for reference but is not used by the adapter (see the reply routing decision in `ARCHITECTURE.md`). `--unread-only` and newer additive JSON fields require 0.13. An older executable will return a clear nonzero error when a newer optional method is requested; core watch/plain send flags remain compatible with 0.11.0.
-
-Recommended upgrade process:
+Use this read-only upgrade check:
 
 ```bash
 brew update
 brew upgrade steipete/tap/imsg
 imsg --version
-imsg status --json
+imsg watch --help
+imsg send --help
+imsg rpc --help
+imsg status --json | jq '{advanced_features,v2_ready,rpc_methods,selectors}'
 scripts/validate.sh
 ```
 
-Do not upgrade and restart blindly. First compare `imsg watch --help` and `imsg send --help`, run a read-only chats/history probe, then a user-approved test message in a dedicated chat.
+Do not infer action availability from a version string. The plugin uses the
+status object at mutation time.
 
 ## Rollback
 
-1. Stop Hermes gateway using the normal operator procedure (this repository does not restart it).
-2. Restore the previous plugin checkout/symlink target.
-3. Keep the state file; its `last_rowid` format is unchanged.
-4. Restore the prior `imsg` package only if CLI incompatibility is proven.
-5. Start Hermes and verify one allowed inbound chat plus one explicit outbound test.
+1. Stop Hermes through the normal operator procedure.
+2. Restore the previous plugin checkout or symlink target.
+3. Keep the state file because its `last_rowid` format is unchanged.
+4. Restore an earlier `imsg` package only after proving a command
+   incompatibility.
+5. Start Hermes and verify read-only discovery before any user-approved live
+   messaging test.
 
-Do not delete the cursor as a routine rollback step; that changes replay semantics independently of code rollback.
+Deleting the cursor changes replay behavior and is not a routine rollback step.

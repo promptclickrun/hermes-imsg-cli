@@ -11,17 +11,10 @@ in this user plugin lets Hermes core remain aligned with stock upstream. The
 plugin retains exact chat-rowid reply routing,
 the `allow`/`deny`/`prompt`/`silent_drop` rule engine, separate DM and group
 allowlists, participant and mention gates, identity aliases, read receipts, and
-out-of-process delivery for cron and `send_message`.
-
-Compatibility was reviewed against OpenClaw `imsg` main at commit
-[`b5b7464`](https://github.com/openclaw/imsg/commit/b5b7464bc748af482bfc3059b28d5dab0395da9e),
-on 2026-07-13. The reviewed surface includes source-correct chats, group,
-history, search, and watch commands; native NDJSON parsing; attachment
-conversion metadata; service-aware text and file sends; standard reactions;
-thread metadata; read and typing hooks; explicit, capability-gated native poll
-creation, voting, and unvoting; and failures with PII redacted. This repository
-is not an OpenClaw adapter, and it does not claim that private, SIP-disabled
-features are public.
+out-of-process delivery for cron and `send_message`. It also supports native
+formatted text, exact same-chat replies, tapback add and remove, effects,
+message edit and unsend, native polls, file and voice attachments, and group
+management through per-action private bridge capability checks.
 
 ## Start with the routing invariant
 
@@ -29,16 +22,15 @@ features are public.
 > inbound message. The plugin does not resolve a GUID for routing, match a
 > participant, or guess across chats.
 
-The adapter's reply path, `send()` to `_send_plain()`, always uses
-`imsg send --chat-id` with the rowid it received. Explicit outbound sends may
-use phone or E.164 routing through `--to`, but replies never do.
+The ordinary reply path always uses `imsg send --chat-id` with the captured
+rowid. Explicit proactive sends may use a rowid, chat GUID, chat identifier,
+phone number, or email address.
 
-Hermes may pass `reply_to` or `metadata` to `send()` for interface
-compatibility. The plugin ignores both when choosing a destination. A caller,
-cache entry, or metadata field cannot supply a `chat_guid` that redirects the
-reply. The adapter also never attempts a threaded `send-rich` reply, because a
-threaded destination cannot safely override the captured rowid. See
-[Architecture and decision log](docs/ARCHITECTURE.md) for the full reasoning.
+When Hermes supplies `reply_to`, the plugin uses a native threaded reply only
+if that message GUID and the corresponding chat GUID were learned from the
+same trusted inbound rowid. Otherwise it keeps the plain rowid route. Metadata
+never redirects a reply. See [Architecture and decision
+log](docs/ARCHITECTURE.md) for the full reasoning.
 
 ## Requirements
 
@@ -50,6 +42,12 @@ threaded destination cannot safely override the captured rowid. See
 - Automation permission for Messages.app when sending.
 - Accessibility and Automation permission for public `react` operations.
 - Optional `ffmpeg` for CAF and GIF attachment conversion on receipt.
+
+Native tapback targeting, edit, unsend, threaded replies, effects, polls,
+group management, read receipts, and typing indicators require the optional
+private bridge reported by `imsg status --json`. That bridge has a deliberate
+host security tradeoff because its setup requires System Integrity Protection
+to be disabled. Basic messaging remains available without it.
 
 SMS also requires Text Message Forwarding from an iPhone. Although upstream
 supports a copied-database read-only preview on Linux, this live Hermes platform
@@ -96,8 +94,10 @@ platforms:
       allow_all: false
       allowed_handles: ["+12025550101"]          # DM allowlist
       group_allowed_handles: ["+12025550101"]    # separate group allowlist
+      group_action_admins: ["+12025550101"]      # group mutation owners
       allowed_chats: ["16", "8"]                 # Messages chat rowids
       require_mention: false
+      reaction_notifications: own                 # own | all | off
       poll_vote_events:
         dm: false
         group: false
@@ -140,12 +140,14 @@ IMCore behavior. On a normal SIP-enabled Mac, use the public-only settings in
 | `IMSG_HOME_CHANNEL` | Default cron or notification target, as a chat rowid or `+E.164` number. |
 | `IMSG_ALLOWED_USERS` | Comma-separated DM allowlist using E.164 numbers or email addresses. |
 | `IMSG_GROUP_ALLOWED_USERS` | Comma-separated group allowlist. |
+| `IMSG_GROUP_ACTION_ADMINS` | Comma-separated authenticated senders allowed to mutate group metadata or membership. Defaults to `IMSG_ALLOWED_USERS`. |
 | `IMSG_ALLOWED_CHATS` | Comma-separated group chat rowids. |
 | `IMSG_ALLOW_ALL_USERS` | Allow every user. Use this only for development. |
 | `IMSG_REQUIRE_MENTION` | Require a mention in group chats. |
 | `IMSG_MENTION_PATTERNS` | Group mention patterns as a JSON array or comma- or newline-separated regular expressions. |
 | `IMSG_AUTO_LAUNCH` | Re-arm the Messages.app bridge on connect. The default is `true`. |
 | `IMSG_SEND_READ_RECEIPTS` | Send read receipts for inbound messages. The default is `true`. |
+| `IMSG_REACTION_NOTIFICATIONS` | Deliver inbound tapbacks for `own`, `all`, or `off`. The default is `own`. |
 | `IMSG_FALLBACK_ACTION` | Action to take when no rule matches. |
 | `IMSG_PARTICIPANT_VALIDATION` | Use `fast` event data or a `strict` live CLI lookup. |
 | `IMSG_PARTICIPANT_CACHE_TTL` | Number of seconds to cache strict participant lookups. The default is `300`. |
@@ -270,68 +272,54 @@ the line number without quoting its private payload. The adapter exposes the
 same additive read surface through `list_chats`, `get_chat_info`, `get_history`,
 and `search_messages`.
 
-## Use native polls explicitly
+## Use native actions explicitly
 
-The plugin registers one agent-facing Hermes tool, `imsg_poll`, with `send`,
-`vote`, and `unvote` actions. Poll creation is a separate native extension
-mutation. The plugin never infers a poll from ordinary text.
+The plugin registers `imsg_action` for private bridge actions and keeps
+`imsg_poll` as a backward-compatible poll entry point. Ordinary text never
+implicitly becomes an edit, reaction, poll, effect, or group mutation.
 
-Poll creation requires either an exact positive Messages `chat_id` rowid or an
-exact proactive `chat_guid`. Use the captured rowid for any operation that
-begins with an inbound message. A phone number or email participant handle is
-not accepted as a poll target.
+`imsg_action` supports:
 
-```python
-client = ImsgClient("/opt/homebrew/bin/imsg", timeout=30)
-created = await client.send_poll(
-    "42", "Dinner?", ["Pizza", "Sushi"], comment="Vote by 5pm",
-    reply_to="OPTIONAL-PARENT-MESSAGE-GUID",
-)
-voted = await client.vote_poll("42", "POLL-GUID", option_index=2)
-removed = await client.unvote_poll("42", "POLL-GUID", option_id="OPTION-UUID")
-```
+- `react`, including named or inferred removal and message part indexes
+- `edit` and `unsend` for bot-authored messages
+- `reply` with text, one attachment, or both
+- `sendWithEffect` with supported short names or canonical Apple effect IDs
+- `upload-file`, optionally as a voice attachment
+- `renameGroup`, `setGroupIcon`, `addParticipant`, `removeParticipant`, and
+  `leaveGroup`
+- `poll`, `poll-vote`, and `poll-unvote`
 
-Vote and unvote selectors may be an exact option UUID, a 1-based index, or
-case-insensitive option text. Unvote is selective: it removes only the resolved
-option, and upstream rejects an option that is not currently selected.
+Every call supplies exactly one `chat_id`, `chat_guid`, `chat_identifier`, or
+`to` target. Message and poll references are resolved inside that conversation
+before mutation. Group actions require a live group target. Callers outside an
+interactive local Hermes surface must also match `group_action_admins`, which
+defaults to the DM owner allowlist.
 
-Creation uses the `poll.send` JSON-RPC mutation path used by OpenClaw's caller,
-avoiding the short-lived CLI caption path. Vote and unvote retain their tested
-CLI selector behavior. The plugin also provides pure RPC request builders for
-integrations.
+Vote and unvote selectors may be an exact option UUID, a one-based index, or
+case-insensitive option text. Unvote removes only the resolved option. Polls
+accept 2 to 12 options and an optional same-chat reply reference.
 
-Before every poll mutation, the client runs the read-only
-`imsg status --json` check. Creation requires an advertised `poll.send` method,
-or its alias, together with `pollPayloadMessage`. Vote and unvote require their
-advertised RPC methods and `pollVoteMessage`. If a method or selector is
-missing, the plugin returns a structured failure before starting the poll
-mutation subprocess. The Hermes tool remains implemented when the installed
-binary or bridge lacks the feature; it reports that capability failure instead
-of claiming success.
+Before every advanced mutation, the client runs the read-only
+`imsg status --json` check. It requires the private bridge flags, the action's
+advertised RPC method, and any required selector. Missing capability returns a
+structured failure before the mutation command starts.
 
-Native polls require a sufficiently new upstream build and the optional IMCore
-bridge started by `imsg launch`, which uses SIP-disabled injection. The plugin
-does not disable SIP, install a dylib, grant TCC access, or launch or restart a
-service for poll use.
-
-Upstream sends a best-effort plain caption after creating a poll because
-Messages does not render the payload title. A caption failure does not mean the
-poll failed. Retrying solely because the caption failed can create a duplicate
-poll.
+Native actions require the optional bridge started by `imsg launch`. The plugin
+may re-arm an already configured bridge when `auto_launch` is enabled. It does
+not disable SIP, install or sign a dylib, grant TCC access, or change the host's
+security settings.
 
 ## Public and advanced feature boundaries
 
 Chat listing, group lookup, history, search, watch, plain send, file send, and
-standard public reactions use the local Messages database and Messages
-automation. Basic operation does not require SIP-disabled injection. Public
-`react` accepts the six standard tapbacks: `love`, `like`, `dislike`, `laugh`,
-`emphasis`, and `question`. Custom emoji and removal are not exposed through
-the public path.
+the most-recent-message standard reaction path use the local Messages database
+and Messages automation. Basic operation does not require private bridge
+injection.
 
-Native poll creation, voting, and unvoting do require the optional IMCore
-bridge. Read receipts, typing indicators, and targeted tapbacks are also
-advanced IMCore features in upstream `imsg`. They can be unavailable on macOS
-26. The plugin does not disable SIP or grant permissions for any of them.
+Targeted tapback add and remove, edit, unsend, threaded reply, effects, native
+polls, group management, read receipts, and typing indicators use the private
+bridge. Each native action is gated independently by the methods and selectors
+reported by the installed `imsg` build.
 
 For a normal SIP-enabled Mac, use:
 
@@ -343,9 +331,9 @@ platforms:
       send_read_receipts: false
 ```
 
-Threaded and rich replies through `send-rich --reply-to` are never used. Every
-reply is a plain rowid send. The [parity ledger](docs/PARITY.md) records every
-reviewed upstream command, including safe exclusions and direct alternatives.
+When the private bridge is unavailable, ordinary replies remain exact rowid
+sends. The [supported functionality catalog](docs/PARITY.md) lists the basic
+and private paths with their operational requirements.
 
 ## Security and privacy
 
@@ -353,7 +341,14 @@ Read [SECURITY.md](SECURITY.md) before changing routing, subprocess handling,
 attachments, logs, or local state. The following properties are part of the
 plugin's operating contract:
 
-- Replies use the trusted positive rowid and never a caller-supplied GUID.
+- Ordinary replies use the trusted positive rowid. A threaded reply uses a
+  message GUID only when the plugin already bound it and its chat GUID to that
+  same rowid from a trusted inbound event.
+- Native message and poll references are verified in the selected conversation
+  before mutation. Edit and unsend also require a bot-authored history record.
+- Group mutations outside interactive local Hermes surfaces require an
+  authenticated sender in the owner allowlist. Group conversation access and
+  unauthenticated API context are insufficient.
 - Chat-id send targets must be positive integer rowids no longer than 19 digits.
   Invalid or oversized targets are rejected before a subprocess starts.
 - A zero exit code from `imsg send` is not enough to report success. The command
@@ -375,10 +370,10 @@ plugin's operating contract:
 - A timed-out or cancelled subprocess receives a terminate signal first. The
   plugin bounds that wait and then force-kills a child that does not exit, so
   cleanup cannot hang indefinitely.
-- The platform registry deliberately leaves `pii_safe` unset. The `imsg_poll`
-  tool must receive the exact rowid shown to the agent; hashing that value in
-  the prompt would break poll actions without improving routing privacy. See
-  `build_entry_kwargs()` for the registry entry.
+- The platform registry deliberately leaves `pii_safe` unset. The
+  `imsg_action` and `imsg_poll` tools must receive exact conversation and
+  message references; hashing those values would break native actions without
+  improving routing privacy. See `build_entry_kwargs()` for the registry entry.
 - The plugin never edits TCC, disables SIP, signs or injects a dylib, or signs
   in to Messages on the operator's behalf.
 
@@ -403,9 +398,12 @@ hermes_imsg_cli/          # plugin package and symlink target
   rules.py                # Hermes-independent rules and redaction
   config.py               # configuration, requirements, state path, and target normalization
   cli.py                  # pure argument builders and subprocess runners
-  client.py               # bounded async CLI and NDJSON client without Hermes imports
+  client.py               # bounded async CLI, RPC, and NDJSON client
+  formatting.py           # supported markup to native UTF-16 formatting ranges
+  capabilities.py         # immutable per-action private bridge capability model
+  actions.py              # exact-target Hermes native action tools
 tests/                    # pytest suite; no live sends
-docs/                     # architecture, operations, parity, migration, and verification
+docs/                     # architecture, operations, functionality, migration, and verification
 scripts/
   install-local.sh        # local symlink, enablement, and discovery probe
   validate.sh             # tests and import/registration probe
@@ -450,8 +448,8 @@ Validate the static release site and Pages workflow:
 python scripts/validate_site.py
 ```
 
-Tests never send a live iMessage or SMS. They also do not create polls, cast or
-remove votes, or run reactions against a real Messages account. Adapter and
+Tests never send a live iMessage or SMS. They also do not react, edit, unsend,
+create or vote on polls, change groups, or mark a real chat read. Adapter and
 registration tests call `pytest.importorskip("gateway")`, so the pure rule,
 normalization, command-builder, and client tests can run without a Hermes
 checkout.
@@ -469,7 +467,7 @@ setting.
 
 - [Architecture, invariants, and decision log](docs/ARCHITECTURE.md)
 - [Installation, configuration, permissions, security, and troubleshooting](docs/OPERATIONS.md)
-- [Complete command and feature parity matrix](docs/PARITY.md)
+- [Supported functionality catalog](docs/PARITY.md)
 - [Compatibility and migration notes](docs/MIGRATION.md)
 - [Verification evidence](docs/VERIFICATION.md)
 - [Security policy and vulnerability reporting](SECURITY.md)

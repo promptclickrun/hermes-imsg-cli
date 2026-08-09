@@ -1,5 +1,6 @@
 """Plugin registration + config-hook tests.  Requires Hermes core on PYTHONPATH."""
 
+import os
 import shutil
 import sys
 
@@ -18,7 +19,9 @@ from hermes_imsg_cli.adapter import (  # noqa: E402
 from hermes_imsg_cli.config import (  # noqa: E402
     ENV_ALLOW_ALL_USERS,
     ENV_ALLOWED_USERS,
+    ENV_GROUP_ACTION_ADMINS,
     ENV_HOME_CHANNEL,
+    ENV_REACTION_NOTIFICATIONS,
     apply_yaml_config_fn,
     env_enablement_fn,
 )
@@ -80,12 +83,32 @@ def test_register_registers_imsg_platform():
     assert entry.standalone_sender_fn is adapter_mod._standalone_send
     assert entry.env_enablement_fn is not None
     assert entry.apply_yaml_config_fn is not None
-    assert len(ctx.registered_tools) == 1
-    tool = ctx.registered_tools[0]
-    assert tool["name"] == "imsg_poll"
-    assert tool["toolset"] == "imsg"
-    assert tool["is_async"] is True
-    assert tool["schema"]["parameters"]["properties"]["action"]["enum"] == ["send", "vote", "unvote"]
+    assert [tool["name"] for tool in ctx.registered_tools] == [
+        "imsg_action",
+        "imsg_poll",
+    ]
+    action_tool, poll_tool = ctx.registered_tools
+    assert action_tool["toolset"] == "imsg"
+    assert action_tool["is_async"] is True
+    assert action_tool["schema"]["parameters"]["properties"]["action"]["enum"] == [
+        "react",
+        "edit",
+        "unsend",
+        "reply",
+        "sendWithEffect",
+        "upload-file",
+        "renameGroup",
+        "setGroupIcon",
+        "addParticipant",
+        "removeParticipant",
+        "leaveGroup",
+        "poll",
+        "poll-vote",
+        "poll-unvote",
+    ]
+    assert poll_tool["toolset"] == "imsg"
+    assert poll_tool["is_async"] is True
+    assert poll_tool["schema"]["parameters"]["properties"]["action"]["enum"] == ["send", "vote", "unvote"]
 
 
 def test_platform_missing_resolves_after_register():
@@ -126,11 +149,21 @@ def test_env_enablement_returns_seed_with_enabled(monkeypatch):
     monkeypatch.setenv("IMSG_HOME_CHANNEL", "16")
     monkeypatch.setenv("IMSG_ALLOWED_USERS", "+12025550101")
     monkeypatch.setenv("IMSG_GROUP_ALLOWED_USERS", "+12025550101,+12025550102")
+    monkeypatch.setenv(ENV_GROUP_ACTION_ADMINS, "+12025550101")
     seed = env_enablement_fn()
     assert seed is not None
     assert seed["allowed_handles"] == "+12025550101"
     assert seed["group_allowed_handles"] == "+12025550101,+12025550102"
+    assert seed["group_action_admins"] == "+12025550101"
     assert seed["home_channel"]["chat_id"] == "16"
+
+
+def test_env_enablement_preserves_reaction_notification_mode(monkeypatch):
+    monkeypatch.setenv("IMSG_ENABLED", "true")
+    monkeypatch.setenv(ENV_REACTION_NOTIFICATIONS, "all")
+    seed = env_enablement_fn()
+    assert seed is not None
+    assert seed["reaction_notifications"] == "all"
 
 
 # ---------------------------------------------------------------------------
@@ -138,12 +171,18 @@ def test_env_enablement_returns_seed_with_enabled(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_apply_yaml_config_bridges_env_and_returns_extra(monkeypatch):
-    for var in ("IMSG_BINARY", "IMSG_ALLOWED_USERS", "IMSG_HOME_CHANNEL"):
+    for var in (
+        "IMSG_BINARY",
+        "IMSG_ALLOWED_USERS",
+        "IMSG_GROUP_ACTION_ADMINS",
+        "IMSG_HOME_CHANNEL",
+    ):
         monkeypatch.delenv(var, raising=False)
     platform_cfg = {
         "extra": {
             "binary": "/opt/homebrew/bin/imsg",
             "allowed_handles": ["+12025550105", "+12025550106"],
+            "group_action_admins": ["+12025550105"],
             "rules": [{"name": "owners_dm", "action": "allow"}],
             "identity_aliases": {"+12025550105": "Family Member"},
         },
@@ -158,6 +197,7 @@ def test_apply_yaml_config_bridges_env_and_returns_extra(monkeypatch):
     import os
     assert os.environ["IMSG_BINARY"] == "/opt/homebrew/bin/imsg"
     assert os.environ["IMSG_ALLOWED_USERS"] == "+12025550105,+12025550106"
+    assert os.environ["IMSG_GROUP_ACTION_ADMINS"] == "+12025550105"
     assert os.environ["IMSG_HOME_CHANNEL"] == "16"
 
 
@@ -167,6 +207,16 @@ def test_apply_yaml_config_env_wins_over_yaml(monkeypatch):
     apply_yaml_config_fn({}, platform_cfg)
     import os
     assert os.environ["IMSG_BINARY"] == "/custom/imsg"  # env preserved
+
+
+def test_apply_yaml_config_bridges_reaction_notification_mode(monkeypatch):
+    monkeypatch.delenv(ENV_REACTION_NOTIFICATIONS, raising=False)
+    seed = apply_yaml_config_fn(
+        {}, {"extra": {"reaction_notifications": "off"}}
+    )
+    assert seed is not None
+    assert seed["reaction_notifications"] == "off"
+    assert os.environ[ENV_REACTION_NOTIFICATIONS] == "off"
 
 
 def test_apply_yaml_config_ignores_non_dict():

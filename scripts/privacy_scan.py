@@ -11,7 +11,7 @@ Usage:
     python scripts/privacy_scan.py path1 ...   # scan specific files instead
 
 Exit code is non-zero if any finding is reported.  This is a heuristic tool,
-not a guarantee — it complements, not replaces, code review.
+not a guarantee; it complements, not replaces, code review.
 """
 
 from __future__ import annotations

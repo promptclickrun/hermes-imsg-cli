@@ -5,123 +5,219 @@
 ```text
 Messages chat.db / Messages.app
               ^
-              | upstream command + NDJSON contract
+              | local command, NDJSON, and JSON-RPC contracts
        local `imsg` executable
               ^
-              | subprocess boundary
-  cli.py  <-> client.py
+              | bounded subprocess boundary
+  cli.py <-> client.py <-> capabilities.py
               ^
-              | Hermes platform methods
+              | exact target and message validation
+          actions.py
+              ^
+              | Hermes platform and tool interfaces
           adapter.py
               ^
               | stock plugin registry
        Hermes gateway / cron
 ```
 
-This repository is a **Hermes plugin**. It does not vendor OpenClaw Swift code, read `chat.db` itself, host a persistent JSON-RPC transport, or emulate an OpenClaw process. `imsg` remains the source of truth for Messages schema compatibility, filesystem watching, WAL rotation, contact resolution, AppleScript staging, and optional attachment conversion.
+This repository is a Hermes platform plugin. It does not read `chat.db`
+directly or reproduce the Messages schema. The installed `imsg` executable
+owns database compatibility, watch behavior, contact resolution, Messages.app
+automation, the optional private bridge, and native mutation mechanics.
 
 ## Module responsibilities
 
-- `cli.py`: pure, testable argument builders (including poll CLI and non-executing RPC request composition); NDJSON parser; the only generic subprocess runners.
-- `client.py`: Hermes-independent async convenience API for bounded CLI calls. It adds timeouts, structured PII-redacted failures, object-shape checks, and fail-before-mutation poll capability probes. It is not a protocol adapter.
-- `adapter.py`: Hermes `BasePlatformAdapter`, event conversion, policy enforcement, same-chat routing, watch lifecycle, read/typing/reaction/poll integration, explicit `imsg_poll` tool registration, and standalone cron send.
-- `attachments.py`: Hermes-independent outbound regular-file validation shared by adapter, standalone, and direct client sends.
-- `rules.py`: import-safe default-deny authorization model and redaction helpers.
-- `config.py`: plugin-owned YAML/environment translation, binary checks, state path, and the Hermes E.164 parser workaround.
+- `cli.py`: pure command builders, JSON-RPC request builders, target parsing,
+  NDJSON parsing, and generic subprocess runners.
+- `formatting.py`: supported authored markup to native Messages ranges using
+  UTF-16 coordinates.
+- `capabilities.py`: immutable parsing of `imsg status --json` and strict
+  per-action method and selector requirements.
+- `client.py`: bounded async read, send, and native mutation operations with
+  structured errors and attachment validation.
+- `actions.py`: Hermes schemas, exact target resolution, same-chat reference
+  checks, owner authorization for group mutations, unified native dispatch,
+  and the poll compatibility handler.
+- `adapter.py`: Hermes event conversion, policy enforcement, trusted reply
+  caches, watch supervision, reaction and poll normalization, media methods,
+  read and typing hooks, tool registration, and standalone delivery.
+- `attachments.py`: regular-file validation shared by adapter, client, action,
+  and standalone sends.
+- `rules.py`: default-deny authorization and PII redaction helpers.
+- `config.py`: plugin-owned YAML and environment translation, executable
+  checks, state-path resolution, explicit target parsing, and the stock Hermes
+  phone-target normalization workaround.
 
 ## Non-negotiable invariants
 
-1. **Exact inbound rowid routing.** `MessageEvent.source.chat_id` is the positive upstream `chat_id`; every reply — threaded or not — calls `imsg send --chat-id <same value>`. A GUID or participant is never substituted, and no caller/metadata-supplied `chat_guid` can redirect a reply to a different chat (see the Reply routing decision below).
-2. **Fail closed on unresolved chats.** Missing, blank, or zero chat rowids do not become direct-message-shaped events. Chat-id send targets are validated as positive-integer rowids within a sane digit range (≤19 digits) before any subprocess runs.
-3. **Self messages never invoke the agent.** This check occurs before policy matching, including `allow_all`.
-4. **Default deny.** If no rule matches, `silent_drop` is the default. DM and group allowlists remain separate. Participant list entries from event data are type-validated (string handles only); non-scalar/boolean entries are dropped rather than coerced.
-5. **No permission automation.** The plugin never edits TCC, disables SIP, signs/injects a dylib, or signs into Messages.
-6. **No payload leakage on parser/log surfaces.** NDJSON exceptions identify a line number but do not quote message text. Raw `imsg watch` lines are never logged, even on parse failure. Subprocess errors, exceptions, and diagnostics are redacted for phone numbers, emails, home-directory paths, and GUID-like identifiers before reaching a log line or an agent-visible error. Plugin-owned rule, participant, and action logs omit the known chat rowid.
-7. **Private capability honesty.** Read receipts, typing, and targeted tapbacks can fail when the bridge is absent. Basic reads/watch/plain sends continue. Rich/threaded replies are not attempted at all (see below), independent of bridge availability.
-8. **Polls are explicit and capability-gated.** Poll creation/voting is never inferred from text. `status --json` must advertise both the operation method and required selector before the mutation command runs; absence is an error, not success.
-9. **No participant routing for polls.** Inbound-originated polls use the captured exact rowid. Explicit proactive operations may use an exact chat GUID; phone/email handles are not accepted.
-10. **Fail closed on ambiguous send confirmation.** A zero exit code from `imsg send` is not itself success; stdout must parse as a JSON confirmation object. Outbound attachments must be regular files — symlinks and special files (directories, FIFOs, sockets, device nodes) are rejected before `--file` is used. Multi-attachment sends are fail-fast with a deterministic partial-failure report (`failed_index`, `succeeded_message_ids`) rather than an ambiguous single error.
-11. **Local state is written safely.** The resumable cursor file is written to a same-directory temp file and atomically renamed into place with owner-only (`0600`) permissions.
+1. **Exact ordinary reply routing.** `MessageEvent.source.chat_id` is the
+   positive rowid from the inbound object. A normal reply uses that same rowid.
+2. **Trusted threading only.** A native threaded reply is allowed only when the
+   requested message GUID and its chat GUID were recorded for that same rowid
+   from trusted inbound data. Caller metadata never supplies a destination.
+3. **Exact native targets.** An action accepts one of `chat_id`, `chat_guid`,
+   `chat_identifier`, or `to`. Conflicts fail before the client is created.
+4. **Same-chat references.** Message and poll IDs are looked up in the target
+   conversation. Edit and unsend require `is_from_me: true`.
+5. **Fail closed on unresolved chats.** Missing, zero, invalid, or conflicting
+   targets do not become direct-message-shaped operations.
+6. **Self messages never invoke the agent.** Self suppression runs before
+   rules, including configurations that otherwise allow every sender.
+7. **Default deny.** Rules are first-match and the fallback is `silent_drop`.
+   Direct-message and group allowlists remain separate.
+8. **Group mutation ownership.** Group admission and unauthenticated
+   programmatic context do not grant mutation authority. Non-local callers must
+   match the group action admin list.
+9. **No permission automation.** The plugin never edits TCC, disables SIP,
+   installs or signs a dylib, or signs in to Messages.
+10. **Capability honesty.** Every private action requires both private bridge
+    flags, an advertised RPC method, and any required selector before mutation.
+11. **No payload leakage.** Raw watch lines are never logged. Errors redact
+    phone numbers, emails, home paths, and stable GUID-like identifiers.
+12. **Confirmed mutation results.** A zero exit code is insufficient. A send or
+    mutation must return a structured JSON success object.
+13. **Safe files.** Outbound paths must be existing regular files. Symlinks and
+    special files are rejected before command execution.
+14. **Safe local state.** The cursor is written atomically with mode `0600`.
 
 ## Event flow
 
-1. `connect()` verifies the executable and optionally preserves the existing `auto_launch` bridge re-arm behavior.
-2. `_watch_loop()` starts one `imsg watch --json --attachments --convert-attachments` process with the persisted `--since-rowid` cursor.
-3. Stdout is consumed line by line (via `_handle_watch_line()`); stderr is drained concurrently into a bounded redacted tail to prevent pipe deadlock. A line that fails to parse as JSON is dropped with only its length logged — the raw content is never logged.
-4. The cursor is advanced and persisted (atomically, `0600`) before policy handling. This prevents an unauthorized or malformed event from replaying forever.
-5. Self/unresolved events are dropped. Rules are evaluated top-down; strict participant checks call the source-backed `group --chat-id` command; participant handles from event data are type-validated.
-6. Allowed messages become Hermes `MessageEvent`s. Converted attachment paths are preferred; a bare `filename`/`file` with no resolvable path is never expanded into one. Missing/unresolvable paths are omitted while raw metadata stays in `raw_message`.
-7. Replies always use the exact source rowid via a plain `imsg send --chat-id` call — see the Reply routing decision below.
+1. `connect()` checks the executable and may re-arm a previously configured
+   private bridge when `auto_launch` is enabled.
+2. `_watch_loop()` starts one `imsg watch --json --attachments
+   --convert-attachments --reactions` process with the persisted
+   `--since-rowid` cursor.
+3. Stdout is consumed one line at a time. Stderr is drained concurrently into
+   a bounded redacted tail so neither pipe can block the process.
+4. A malformed line is dropped with only its size logged. Its content is not
+   copied to a log message.
+5. The cursor advances before policy handling so unauthorized or malformed
+   events cannot replay forever.
+6. Self and unresolved events are dropped. Sender, chat, participant, mention,
+   and fallback policy is evaluated.
+7. Accepted reactions are filtered by `own`, `all`, or `off`. Accepted poll
+   events are filtered by their DM, group, chat, and unvote settings.
+8. Accepted objects become Hermes `MessageEvent` values with the complete
+   decoded object retained in `raw_message`.
+9. Hermes replies by exact rowid unless the trusted same-chat thread binding is
+   satisfied.
 
-## Reply routing: why rich/threaded replies are not attempted
+## Reply routing
 
-An earlier revision let `send()` attempt a threaded `send-rich --reply-to`
-reply whenever reply metadata and a `chat_guid` were available — the
-`chat_guid` could come from a per-chat cache **or from caller-supplied
-`metadata`**. That is a routing vulnerability: nothing bound the supplied
-`chat_guid` to the `chat_id` the reply was actually invoked for, so a stale
-cache entry or a forged/attacker-influenced `metadata` value could silently
-redirect a reply to a different chat than intended, defeating the exact-
-rowid safety invariant above.
+The rowid remains the routing authority. The adapter caches the latest trusted
+message GUID and chat GUID by rowid when it accepts inbound data. A
+`reply_to` request is native-threaded only when all three values match that
+cache entry:
 
-There is no safe way to accept a caller-controlled routing override here.
-`send()` therefore never attempts `send-rich`: `reply_to`/`metadata` are
-accepted only for `BasePlatformAdapter` interface compatibility and are
-never used to select a destination chat. Every reply, threaded or not,
-plain-sends to the exact `chat_id` it was invoked with. This trades away the
-visual "threaded reply" bubble for a routing guarantee that cannot be
-subverted by any input the adapter does not itself control.
+```text
+requested rowid == cached rowid
+requested message GUID == cached message GUID
+cached rowid has a trusted chat GUID
+```
+
+When any condition fails, the reply remains a plain `send --chat-id` call. The
+cache cannot redirect a rowid because the rowid is the lookup key, and request
+metadata is not consulted for routing.
+
+## Native action flow
+
+1. Validate the action name and reject fields not accepted by that action.
+2. Enforce the group action owner boundary before creating a client or reading
+   chat metadata.
+3. Resolve exactly one conversation target.
+4. Confirm that group actions target a group.
+5. Resolve message or poll IDs from up to 1,000 records in that same chat.
+6. Confirm bot authorship for edit and unsend.
+7. Validate any file path.
+8. Probe `status --json` and require the action's method and selectors.
+9. Execute one native mutation and require structured JSON confirmation.
+10. Return the action, resolved target, and native result or a redacted error.
+
+The compatibility `imsg_poll` handler maps `send`, `vote`, and `unvote` onto
+the same dispatcher, so target, capability, and failure behavior cannot drift.
+
+## Capability model
+
+Each private action has an immutable requirement containing one or more
+accepted method names and, where needed, one or more acceptable selectors.
+All actions require `advanced_features: true` and `v2_ready: true`.
+
+Edit accepts either supported edit selector. Unsend requires the retract
+selector. Poll creation requires the poll payload selector. Vote and unvote
+require the poll vote selector. A malformed or incomplete status object behaves
+as unavailable and stops the mutation.
+
+Status is read lazily at action time. This allows a newly re-armed bridge to
+serve the first action without requiring a separate manual refresh.
 
 ## Cursor and reconnect model
 
-The state file stores only `last_rowid` and an update timestamp under the active Hermes home unless overridden, written atomically (temp file + `os.replace()`) with owner-only (`0600`) permissions. Upstream watch owns database filesystem events, WAL sidecar re-arming, polling fallback, row metadata retry, URL-preview coalescing, and ordering. The plugin owns process supervision: it drains both pipes, restarts an ended stream, and uses 1–30 second exponential backoff. A real stdout line resets backoff; successful spawn alone does not.
+The state file stores `last_rowid` and an update timestamp under the active
+Hermes home unless overridden. It is written to a same-directory temporary
+file, set to mode `0600`, and atomically replaced.
 
-This is **at-least-once around the crash window**, not a transactional queue. The cursor is stored before gateway handling, favoring loop prevention and safety over replaying a message whose agent invocation crashed. Operators who need replay can stop the gateway, back up the state file, set a deliberate lower cursor, and restart; see `OPERATIONS.md`.
+The plugin supervises the watch process, drains both pipes, and restarts an
+ended stream with exponential backoff from 1 to 30 seconds. A valid stdout
+event resets the backoff; process creation alone does not.
+
+The delivery model is at-least-once around process restarts but intentionally
+stores the cursor before agent dispatch. This favors loop prevention over
+replaying an event whose later agent invocation failed.
 
 ## Attachment decisions
 
-- Request metadata and conversion on watch/history.
-- Prefer `converted_path`/`convertedPath`, then original `path`.
-- Ignore `missing=true` paths rather than handing Hermes a nonexistent file.
-- Do not copy or upload attachment files automatically.
-- Send uses upstream's one-file-per-command contract. Multiple Hermes files become separate sends; no builder emits repeated `--file` options that upstream may silently collapse.
+- Request attachment metadata and conversion on watch and history.
+- Prefer `converted_path`, then an original resolved path.
+- Ignore objects marked `missing=true`.
+- Treat `filename` and `file` as display metadata, not local paths.
+- Validate every outbound path as a regular file.
+- Use one file per command. Multi-file standalone sends execute sequentially
+  and report a deterministic partial failure.
+- A trusted rich reply accepts at most one attachment.
 
 ## Reaction decisions
 
-The public `react` command supports exactly six standard tapbacks and targets the newest inbound message in a chat. Unknown/custom emoji are rejected before execution. If the adapter has trusted recent chat/message GUIDs, its existing bridge `tapback` path can target that message, but this remains an optional private capability and is never advertised as SIP-free.
+The normal adapter reaction helper supports the six reliable standard
+tapbacks. The native action tool targets an exact same-chat message and supports
+addition, removal, and part indexes. If removal omits a reaction name, the
+handler inspects the message's current `reactions` array and requires exactly
+one bot-authored tapback to remove.
+
+Inbound reaction mode defaults to `own`. The adapter first checks a bounded
+cache of sent message GUIDs, then performs a same-chat history lookup when
+needed. Authorization runs before the ownership lookup.
 
 ## Poll decisions
 
-Hermes creates a native poll through one bounded `imsg rpc` subprocess using
-the canonical `poll.send` JSON-RPC method. This avoids the CLI creation path
-that can produce a second poll in some bridge/runtime combinations. Vote and
-unvote remain short-lived `imsg poll vote` and `imsg poll unvote` commands.
-The plugin does not host a persistent RPC process. Before every mutation, the
-client reads `status --json`: create requires `poll.send` plus
-`pollPayloadMessage`; vote requires `poll.vote` plus `pollVoteMessage`; unvote
-requires an advertised unvote alias plus `pollVoteMessage`. An older binary,
-malformed status response, or missing injected selector fails before mutation.
+Creation uses one bounded JSON-RPC request. Vote and selective unvote use the
+validated native command path. Options accept an exact ID, a one-based index,
+or text. The upstream bridge remains responsible for decoding a poll, resolving
+option membership, and confirming current selection.
 
-Creation accepts question, at least two non-empty options, optional caption
-override, and optional reply-to GUID. The poll payload may succeed while its
-best-effort plain caption fails; upstream intentionally keeps exit success to
-avoid duplicate-poll retries. Vote and selective unvote accept one of ID,
-1-based index, or text in the CLI. Upstream—not Hermes—validates the decoded
-poll, option membership, and current selection for unvote.
+Polls are never inferred from ordinary text. Inbound vote delivery is disabled
+by default and can be enabled separately for direct messages and groups.
+
+## Group mutation decisions
+
+The handler requires live chat metadata with `is_group: true`. Only interactive
+local surfaces such as CLI, TUI, desktop, and Codex are treated as local
+operators. Every other surface obtains its authenticated sender from Hermes
+task-local session context. That sender must match
+`IMSG_GROUP_ACTION_ADMINS`, or `IMSG_ALLOWED_USERS` when the dedicated setting
+is absent. An empty identity or owner list denies non-local callers, including
+unauthenticated API and webhook contexts.
 
 ## Decision log
 
 | Date | Decision | Reason |
-|---|---|---|
-| 2026-07-13 | Pin parity review to upstream commit `b5b7464…`; document host binary 0.11.0 separately. | Prevent a moving `main` from making claims unverifiable. |
-| 2026-07-13 | Fix strict participant lookup from invalid `chats --chat-id` to `group --chat-id`. | Verified in current command source. |
-| 2026-07-13 | Parse upstream output as NDJSON, while accepting a single compatibility array. | Upstream guarantees one JSON object per line, not a JSON array. |
-| 2026-07-13 | Preserve unknown schema keys and raw payloads. | Upstream schema is additive; re-modeling it would lose 0.13 fields and create adapter drift. |
-| 2026-07-13 | Expose safe bounded reads through a native async client/adapter API, but do not embed a persistent RPC transport. | Meets Hermes needs without creating an OpenClaw adapter. |
-| 2026-07-13 | Keep private IMCore mutations out of the plugin and document direct safe alternatives. | They require SIP-off injection and have no stable public Messages automation equivalent. |
-| 2026-07-13 | Preserve existing bridge auto-launch and plain reply fallback, but label both clearly. | No existing Hermes behavior removed; operators can disable bridge launch. |
-| 2026-07-13 | Expose native polls only as explicit `imsg_poll` send/vote/unvote actions, not as ordinary text-send inference. | Polls mutate a native extension, require extra selectors, have duplicate-retry risk around the best-effort caption, and need exact poll/option identity; explicit intent keeps routing and failure semantics auditable. |
-| 2026-07-15 | Remove the `send-rich` reply path entirely; every reply always plain-sends by rowid. | A caller/metadata-supplied `chat_guid` could redirect a threaded reply to a different chat than the rowid it was invoked with. There is no safe caller-controlled override; the rowid-only path cannot be redirected. |
-| 2026-07-15 | Fail closed on ambiguous `imsg send` output; validate outbound attachments as regular files; stop expanding a bare inbound `filename`/`file` into a path. | A zero exit code, a symlink/special-file attachment, or a bare display-name-as-path each previously risked reporting false success or touching the wrong file. |
-| 2026-07-15 | Write the resumable cursor atomically with `0600` permissions; validate chat-id send targets and event participant types; add bounded terminate-then-kill subprocess cleanup; never log a raw `imsg watch` line; extend redaction to home paths and GUID-like identifiers. | Defense-in-depth hardening ahead of public release; none change the documented command surface. |
-| 2026-07-15 | Do not set `pii_safe=True` on the platform registry entry. | The agent-facing `imsg_poll` tool requires the LLM to pass back the exact rowid it was given; hashing chat/user ids for the prompt (what `pii_safe` enables) would silently break every poll action for no privacy benefit, since routing already uses the untouched value regardless of what the prompt shows. |
+| --- | --- | --- |
+| 2026-07-13 | Parse command output as NDJSON while accepting one compatibility array. | The command contract is one JSON object per line and its schema is additive. |
+| 2026-07-15 | Require structured send confirmation and validate outbound files. | Process exit alone cannot prove delivery, and special files are unsafe send inputs. |
+| 2026-07-15 | Persist the recovery cursor atomically with owner-only permissions. | A partial or broadly readable state file weakens recovery and local privacy. |
+| 2026-08-09 | Permit native threading only from a trusted same-rowid binding. | This restores threaded replies without allowing metadata or stale cross-chat state to redirect delivery. |
+| 2026-08-09 | Centralize all native mutations in `imsg_action` and route poll compatibility through it. | One resolver and capability boundary prevents divergent safety behavior. |
+| 2026-08-09 | Convert supported markup to native UTF-16 ranges. | Messages can render authored emphasis without exposing markup tokens. |
+| 2026-08-09 | Gate each native action from the live status object. | Private bridge availability is granular and may change across host versions. |
+| 2026-08-09 | Require authenticated owners for group mutations from messaging surfaces. | Conversation access must not imply authority to change group identity or membership. |
+| 2026-08-09 | Keep exact identifiers visible to the native action tools. | Hashing rowids or GUIDs would break same-chat validation and native targeting. |

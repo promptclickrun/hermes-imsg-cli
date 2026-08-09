@@ -1,4 +1,4 @@
-"""Tests for scripts/privacy_scan.py — no gateway/Hermes checkout required."""
+"""Tests for scripts/privacy_scan.py: no gateway/Hermes checkout required."""
 
 import importlib.util
 import sys
@@ -63,7 +63,7 @@ def test_scanner_allows_placeholder_home_path(tmp_path):
 def test_scanner_does_not_flag_its_own_regex_source_pattern(tmp_path):
     # A literal regex character class shaped like `/Users/[^/\s"']+` (as
     # appears in rules.py's own redaction pattern) must not be mistaken for
-    # a real per-user path — the bracketed class doesn't look like a
+    # a real per-user path; the bracketed class doesn't look like a
     # plausible username and is skipped naturally by the username shape.
     good = tmp_path / "good.py"
     good.write_text(r'_HOME_PATH_RE = re.compile(r"/Users/[^/\s\"\']+")')

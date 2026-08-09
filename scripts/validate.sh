@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# validate.sh — run the plugin test suite and an import/registration probe
+# validate.sh: run the plugin test suite and an import/registration probe
 # against a Hermes source tree (stock official preferred).
 #
 # Usage:
@@ -55,7 +55,7 @@ assert entry is not None, "imsg not registered"
 assert entry.standalone_sender_fn is not None, "missing standalone_sender_fn"
 assert entry.cron_deliver_env_var == "IMSG_HOME_CHANNEL"
 assert Platform("imsg").value == "imsg"
-assert [tool["name"] for tool in ctx.tools] == ["imsg_poll"]
+assert [tool["name"] for tool in ctx.tools] == ["imsg_action", "imsg_poll"]
 print("OK: imsg registered as a plugin platform; Platform('imsg') resolves via _missing_")
 print("    standalone_sender_fn:", bool(entry.standalone_sender_fn))
 print("    cron_deliver_env_var:", entry.cron_deliver_env_var)

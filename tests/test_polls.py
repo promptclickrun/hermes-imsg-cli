@@ -32,6 +32,7 @@ def capable_status(*, send=True, vote=True, unvote=True):
     methods = ["poll.send", "poll.vote", "polls.unvote"]
     return json.dumps({
         "advanced_features": True,
+        "v2_ready": True,
         "selectors": {
             "pollPayloadMessage": send,
             "pollVoteMessage": vote or unvote,
@@ -214,7 +215,22 @@ async def test_client_fails_before_mutation_when_bridge_capability_missing(opera
 
 @pytest.mark.asyncio
 async def test_client_reports_installed_binary_without_poll_method():
-    runner = FakeRunner([(0, json.dumps({"advanced_features": True, "selectors": {}}), "")])
+    runner = FakeRunner(
+        [
+            (
+                0,
+                json.dumps(
+                    {
+                        "advanced_features": True,
+                        "v2_ready": True,
+                        "rpc_methods": [],
+                        "selectors": {},
+                    }
+                ),
+                "",
+            )
+        ]
+    )
     client = ImsgClient("imsg", runner=runner)
     with pytest.raises(ImsgCommandError, match="installed imsg does not advertise poll.send"):
         await client.send_poll("42", "Q", ["a", "b"])

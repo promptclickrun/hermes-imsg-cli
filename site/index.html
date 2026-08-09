@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Native iMessage and SMS for stock Hermes on macOS, with exact Messages chat rowid reply routing.">
+  <meta name="description" content="Native iMessage and SMS for stock Hermes on macOS, with exact rowid routing, formatted text, reactions, replies, polls, effects, and group actions.">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="theme-color" content="#ffffff">
@@ -35,7 +35,8 @@
         <h1 id="hero-title">Native Messages for stock Hermes.</h1>
         <p class="hero-summary">
           Native iMessage and SMS on macOS, backed by the local <code>imsg</code> CLI.
-          Every inbound reply uses the exact Messages chat rowid that produced it.
+          Every ordinary inbound reply uses the exact Messages chat rowid that produced it,
+          with trusted native replies and capability-gated actions when the private bridge is available.
         </p>
         <p class="hero-contract">No Hermes core fork. No participant lookup for replies. No alternate destination.</p>
         <div class="hero-actions" aria-label="Project actions">
@@ -72,7 +73,7 @@
             <p class="section-label">Routing demonstration</p>
             <h2 id="routing-title">The source chat determines the reply.</h2>
           </div>
-          <p>Select an inbound event. The command updates from its captured positive rowid only. Caller metadata, participant handles, and cached GUIDs are not routing inputs.</p>
+          <p>Select an inbound event. The ordinary command uses its captured positive rowid. A native thread is allowed only when its message and chat GUIDs are already bound to that same rowid.</p>
         </div>
 
         <div class="routing-interface">
@@ -131,10 +132,10 @@
     <section class="section page-width" id="capabilities" aria-labelledby="capabilities-title">
       <div class="section-heading split-heading">
         <div>
-          <p class="section-label">Public and advanced</p>
+          <p class="section-label">Basic and private</p>
           <h2 id="capabilities-title">A visible capability boundary.</h2>
         </div>
-        <p>Basic operation uses public local interfaces with SIP enabled. Private IMCore features require the optional upstream bridge and deliberate operator setup.</p>
+        <p>Basic operation uses local database reads and Messages automation with SIP enabled. Native private actions require the optional bridge and deliberate operator setup.</p>
       </div>
 
       <div class="comparison-wrap">
@@ -142,40 +143,50 @@
           <thead>
             <tr>
               <th scope="col">Capability</th>
-              <th scope="col">Public path</th>
-              <th scope="col">Optional bridge</th>
+              <th scope="col">Basic path</th>
+              <th scope="col">Private bridge</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <th scope="row">Chats, history, search, watch</th>
-              <td data-label="Public path">Available through local database reads</td>
-              <td data-label="Optional bridge">Not required</td>
+              <td data-label="Basic path">Local database reads with supervised recovery</td>
+              <td data-label="Private bridge">Not required</td>
             </tr>
             <tr>
               <th scope="row">Plain text and regular-file sends</th>
-              <td data-label="Public path">Available through Messages automation</td>
-              <td data-label="Optional bridge">Not required</td>
+              <td data-label="Basic path">Messages automation, exact targets, native styled ranges</td>
+              <td data-label="Private bridge">Not required for ordinary sends</td>
             </tr>
             <tr>
-              <th scope="row">Six standard tapbacks</th>
-              <td data-label="Public path">Available through public <code>react</code></td>
-              <td data-label="Optional bridge">Only for targeted tapbacks</td>
+              <th scope="row">Tapback add and remove</th>
+              <td data-label="Basic path">Most-recent-message standard reaction helper</td>
+              <td data-label="Private bridge">Exact message, removal, and part indexes</td>
+            </tr>
+            <tr>
+              <th scope="row">Edit, unsend, threaded reply, effects</th>
+              <td data-label="Basic path">Ordinary rowid reply remains available</td>
+              <td data-label="Private bridge">Same-chat and bot-authorship checks before mutation</td>
             </tr>
             <tr>
               <th scope="row">Native poll create, vote, unvote</th>
-              <td data-label="Public path">Unavailable</td>
-              <td data-label="Optional bridge">Capability-gated before mutation</td>
+              <td data-label="Basic path">Inbound poll objects remain readable</td>
+              <td data-label="Private bridge">Method and selector gated before mutation</td>
+            </tr>
+            <tr>
+              <th scope="row">Group name, icon, members, leave</th>
+              <td data-label="Basic path">Group metadata and admission policy</td>
+              <td data-label="Private bridge">Exact group target plus non-local owner authorization</td>
             </tr>
             <tr>
               <th scope="row">Read receipts and typing</th>
-              <td data-label="Public path">Unavailable</td>
-              <td data-label="Optional bridge">Best effort when supported</td>
+              <td data-label="Basic path">Optional and safely disabled</td>
+              <td data-label="Private bridge">Best effort when supported</td>
             </tr>
             <tr>
               <th scope="row">System Integrity Protection</th>
-              <td data-label="Public path">Remains enabled</td>
-              <td data-label="Optional bridge">Upstream injection requires an operator-managed SIP-disabled environment</td>
+              <td data-label="Basic path">Remains enabled</td>
+              <td data-label="Private bridge">Bridge injection requires an operator-managed SIP-disabled host</td>
             </tr>
           </tbody>
         </table>
@@ -184,8 +195,8 @@
       <div class="configuration-note">
         <div>
           <p class="section-label">Recommended starting point</p>
-          <h3>Use the public path on a normal SIP-enabled Mac.</h3>
-          <p>Turn off bridge launch and read receipt attempts until the advanced environment has been evaluated separately.</p>
+          <h3>Use the basic path on a normal SIP-enabled Mac.</h3>
+          <p>Turn off bridge re-arm and read receipt attempts until the private environment has been evaluated separately.</p>
         </div>
         <pre><code>platforms:
   imsg:
@@ -233,8 +244,10 @@ scripts/install-local.sh</code></pre>
     extra:
       auto_launch: false
       send_read_receipts: false
+      reaction_notifications: own
       allowed_handles: ["+12025550101"]
       group_allowed_handles: ["+12025550101"]
+      group_action_admins: ["+12025550101"]
       allowed_chats: ["42"]
       require_mention: true
       fallback_action: silent_drop</code></pre>
@@ -258,11 +271,19 @@ scripts/install-local.sh</code></pre>
       <dl class="security-list">
         <div>
           <dt>Exact reply destination</dt>
-          <dd>Replies plain-send to the trusted positive rowid. Caller metadata cannot redirect them.</dd>
+          <dd>Ordinary replies use the trusted rowid. Native threads require a message and chat GUID already bound to that same rowid.</dd>
         </div>
         <div>
-          <dt>Fail-closed confirmation</dt>
-          <dd>Malformed status data, invalid targets, and empty or non-object send confirmations are errors.</dd>
+          <dt>Same-chat mutations</dt>
+          <dd>Message and poll IDs are verified in the selected conversation. Edit and unsend also require bot authorship.</dd>
+        </div>
+        <div>
+          <dt>Owner-only group changes</dt>
+          <dd>Non-local callers need an authenticated group action owner; group admission and unauthenticated API context cannot change identity or membership.</dd>
+        </div>
+        <div>
+          <dt>Fail-closed capability and confirmation</dt>
+          <dd>Malformed status, missing methods or selectors, invalid targets, and empty or non-object confirmations are errors.</dd>
         </div>
         <div>
           <dt>Regular files only</dt>
@@ -301,14 +322,14 @@ scripts/install-local.sh</code></pre>
           <table>
             <caption>Recorded current-tree result</caption>
             <tbody>
-              <tr><th scope="row">Test suite</th><td>231 passed, 1 transitive deprecation warning</td></tr>
+              <tr><th scope="row">Test suite</th><td>305 passed, 1 transitive deprecation warning</td></tr>
               <tr><th scope="row">Privacy scan</th><td>No findings</td></tr>
               <tr><th scope="row">Python sources</th><td>Byte compilation passed</td></tr>
               <tr><th scope="row">Shell scripts</th><td>Syntax checks passed</td></tr>
               <tr><th scope="row">Package</th><td>Wheel build passed</td></tr>
             </tbody>
           </table>
-          <p><strong>Non-mutation boundary:</strong> automated tests do not send messages, mark chats read, react, create polls, vote, or unvote against a live account.</p>
+          <p><strong>Non-mutation boundary:</strong> automated tests do not send messages, mark chats read, react, edit, unsend, create polls, change groups, or vote against a live account.</p>
         </div>
       </div>
     </section>
@@ -326,7 +347,7 @@ scripts/install-local.sh</code></pre>
         <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/README.md" rel="noreferrer"><span>README</span><small>Requirements, installation, configuration, and use</small></a>
         <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/ARCHITECTURE.md" rel="noreferrer"><span>Architecture</span><small>Module boundaries, invariants, and decisions</small></a>
         <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/OPERATIONS.md" rel="noreferrer"><span>Operations</span><small>Permissions, commands, and troubleshooting</small></a>
-        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/PARITY.md" rel="noreferrer"><span>Parity</span><small>Reviewed upstream command and capability status</small></a>
+        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/PARITY.md" rel="noreferrer"><span>Supported functionality</span><small>Messaging, native actions, policy, recovery, and requirements</small></a>
         <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/VERIFICATION.md" rel="noreferrer"><span>Verification</span><small>Recorded tests, scans, builds, and known risks</small></a>
         <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/SECURITY.md" rel="noreferrer"><span>Security policy</span><small>Required properties and private reporting</small></a>
       </nav>
