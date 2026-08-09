@@ -504,7 +504,10 @@ async def test_send_ignores_cross_chat_reply_reference(monkeypatch, tmp_path):
         metadata={"chat_guid": "FORGED-OTHER-CHAT"},
     )
     assert result.success is True
-    assert calls == [["send", "--chat-id", "16", "--text", "reply", "--json"]]
+    assert calls == [
+        ["status", "--json"],
+        ["send", "--chat-id", "16", "--text", "reply", "--json"],
+    ]
 
 
 @pytest.mark.asyncio
@@ -739,18 +742,36 @@ async def test_send_document_accepts_regular_file(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_send_imsg_direct_uses_adapter(monkeypatch, tmp_path):
-    calls = []
+    cli_calls = []
+    rpc_calls = []
 
     async def fake_run(self, args):
-        calls.append(args)
-        return 0, json.dumps({"guid": "OUT"}), ""
+        cli_calls.append(args)
+        return 0, json.dumps({
+            "advanced_features": True,
+            "v2_ready": True,
+            "rpc_methods": ["send"],
+            "selectors": {},
+        }), ""
+
+    async def fake_rpc(self, request):
+        rpc_calls.append(request)
+        return 0, json.dumps({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {"guid": "OUT"},
+        }), ""
 
     monkeypatch.setattr(ImsgAdapter, "_run_imsg", fake_run)
+    monkeypatch.setattr(ImsgAdapter, "_run_imsg_rpc", fake_rpc)
     result = await send_imsg_direct(
         {"binary": "imsg", "state_file": str(tmp_path / "state.json")}, "16", "hello"
     )
     assert result["success"] is True
-    assert calls[0][:3] == ["send", "--chat-id", "16"]
+    assert cli_calls == [["status", "--json"]]
+    assert rpc_calls[0]["method"] == "send"
+    assert rpc_calls[0]["params"]["chat_id"] == 16
+    assert rpc_calls[0]["params"]["transport"] == "bridge"
 
 
 def test_check_requirements_non_darwin(monkeypatch):

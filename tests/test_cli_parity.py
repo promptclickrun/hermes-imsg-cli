@@ -1,6 +1,10 @@
 """Source-backed OpenClaw imsg CLI compatibility tests (no live Messages access)."""
 
+import asyncio
 import json
+import os
+import signal
+import sys
 
 import pytest
 
@@ -201,13 +205,16 @@ async def test_run_imsg_rpc_terminates_then_kills_a_sigterm_ignoring_child(monke
     real_create_subprocess_exec = asyncio.create_subprocess_exec
 
     async def fake_create_subprocess_exec(*args, **kwargs):
+        forwarded = {
+            key: kwargs[key]
+            for key in ("stdin", "stdout", "stderr", "start_new_session")
+            if key in kwargs
+        }
         return await real_create_subprocess_exec(
             sys.executable,
             "-c",
             "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
-            stdin=kwargs.get("stdin"),
-            stdout=kwargs.get("stdout"),
-            stderr=kwargs.get("stderr"),
+            **forwarded,
         )
 
     monkeypatch.setattr(cli.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -221,3 +228,156 @@ async def test_run_imsg_rpc_terminates_then_kills_a_sigterm_ignoring_child(monke
         await task
     elapsed = time.monotonic() - start
     assert elapsed < 5.0, f"terminate-then-kill did not bound rpc cleanup ({elapsed:.1f}s)"
+
+
+def _pid_exists(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def _wait_for_path(path, timeout=2.0):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not path.exists() and loop.time() < deadline:
+        await asyncio.sleep(0.01)
+    return path.exists()
+
+
+async def _wait_for_pid_exit(pid, timeout=2.0):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while _pid_exists(pid) and loop.time() < deadline:
+        await asyncio.sleep(0.01)
+    return not _pid_exists(pid)
+
+
+def _parent_with_sigterm_ignoring_grandchild(pid_path):
+    grandchild = (
+        "import signal,time;"
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+        "time.sleep(30)"
+    )
+    parent = (
+        "import pathlib,signal,subprocess,sys,time;"
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+        f"child=subprocess.Popen([sys.executable,'-c',{grandchild!r}],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid));"
+        "time.sleep(30)"
+    )
+    return parent, str(pid_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups are required")
+@pytest.mark.parametrize("runner", ["cli", "rpc"])
+@pytest.mark.asyncio
+async def test_cancelled_runner_removes_sigterm_ignoring_grandchild(
+    monkeypatch, tmp_path, runner
+):
+    """Cancellation must not leave an osascript-like grandchild running."""
+    monkeypatch.setattr(cli, "DEFAULT_TERMINATE_GRACE", 0.2)
+    pid_path = tmp_path / f"{runner}-grandchild.pid"
+    parent_script, pid_arg = _parent_with_sigterm_ignoring_grandchild(pid_path)
+    real_create_subprocess_exec = asyncio.create_subprocess_exec
+
+    if runner == "rpc":
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            forwarded = {
+                key: kwargs[key]
+                for key in ("stdin", "stdout", "stderr", "start_new_session")
+                if key in kwargs
+            }
+            return await real_create_subprocess_exec(
+                sys.executable, "-c", parent_script, pid_arg, **forwarded
+            )
+
+        monkeypatch.setattr(
+            cli.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+        )
+        task = asyncio.create_task(cli.run_imsg_rpc(
+            "imsg", {"jsonrpc": "2.0", "id": 1, "method": "noop", "params": {}}
+        ))
+    else:
+        task = asyncio.create_task(cli.run_imsg(
+            sys.executable, ["-c", parent_script, pid_arg]
+        ))
+
+    grandchild_pid = None
+    try:
+        assert await _wait_for_path(pid_path), "parent did not report its grandchild pid"
+        grandchild_pid = int(pid_path.read_text())
+        assert _pid_exists(grandchild_pid)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert await _wait_for_pid_exit(grandchild_pid), (
+            f"{runner} cancellation left grandchild pid {grandchild_pid} running"
+        )
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if grandchild_pid is not None and _pid_exists(grandchild_pid):
+            os.kill(grandchild_pid, signal.SIGKILL)
+            await _wait_for_pid_exit(grandchild_pid)
+
+
+@pytest.mark.asyncio
+async def test_non_posix_runners_do_not_request_a_new_session(monkeypatch):
+    class SpawnStopped(Exception):
+        pass
+
+    calls = []
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls.append(kwargs)
+        raise SpawnStopped
+
+    monkeypatch.setattr(cli, "_POSIX_PROCESS_GROUPS", False)
+    monkeypatch.setattr(cli.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    with pytest.raises(SpawnStopped):
+        await cli.run_imsg("imsg", ["status", "--json"])
+    with pytest.raises(SpawnStopped):
+        await cli.run_imsg_rpc(
+            "imsg", {"jsonrpc": "2.0", "id": 1, "method": "noop", "params": {}}
+        )
+
+    assert len(calls) == 2
+    assert all("start_new_session" not in kwargs for kwargs in calls)
+
+
+@pytest.mark.asyncio
+async def test_non_posix_cleanup_terminates_then_kills_direct_process(monkeypatch):
+    class FakeProcess:
+        returncode = None
+
+        def __init__(self):
+            self.events = []
+
+        def terminate(self):
+            self.events.append("terminate")
+
+        def kill(self):
+            self.events.append("kill")
+            self.returncode = -999
+
+        async def wait(self):
+            if self.returncode is None:
+                await asyncio.Event().wait()
+            return self.returncode
+
+    monkeypatch.setattr(cli, "_POSIX_PROCESS_GROUPS", False)
+    process = FakeProcess()
+    await cli._terminate_then_kill(process, grace=0.01)
+    assert process.events == ["terminate", "kill"]

@@ -87,6 +87,11 @@ class ImsgCapabilities:
     def private_bridge_ready(self) -> bool:
         return self.advanced_features and self.v2_ready
 
+    def supports_bridge_rpc_method(self, method: str) -> bool:
+        """Return whether the ready private bridge advertises *method*."""
+        normalized = str(method or "").strip()
+        return self.private_bridge_ready and normalized in self.rpc_methods
+
     def require_action(self, action: str) -> None:
         requirement = ACTION_REQUIREMENTS.get(str(action))
         if requirement is None:

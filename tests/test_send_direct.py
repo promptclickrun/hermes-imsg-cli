@@ -152,70 +152,131 @@ pytest.importorskip("gateway", reason="Hermes core not on PYTHONPATH")
 async def test_send_imsg_direct_rowid_uses_chat_id(monkeypatch, tmp_path):
     from hermes_imsg_cli.adapter import ImsgAdapter, send_imsg_direct
 
-    calls = []
+    cli_calls = []
+    rpc_calls = []
 
     async def fake_run(self, args):
-        calls.append(args)
-        return 0, json.dumps({"guid": "OUT"}), ""
+        cli_calls.append(args)
+        return 0, json.dumps({
+            "advanced_features": True,
+            "v2_ready": True,
+            "rpc_methods": ["send"],
+            "selectors": {},
+        }), ""
+
+    async def fake_rpc(self, request):
+        rpc_calls.append(request)
+        return 0, json.dumps({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {"guid": "OUT"},
+        }), ""
 
     monkeypatch.setattr(ImsgAdapter, "_run_imsg", fake_run)
+    monkeypatch.setattr(ImsgAdapter, "_run_imsg_rpc", fake_rpc)
     result = await send_imsg_direct(
         {"binary": "imsg", "state_file": str(tmp_path / "state.json")}, "16", "hello"
     )
     assert result["success"] is True
     assert result["message_id"] == "OUT"
-    assert calls[0][:3] == ["send", "--chat-id", "16"]
+    assert cli_calls == [["status", "--json"]]
+    assert rpc_calls[0]["params"]["chat_id"] == 16
+    assert rpc_calls[0]["params"]["service"] == "auto"
+    assert rpc_calls[0]["params"]["transport"] == "bridge"
 
 
 @pytest.mark.asyncio
 async def test_send_imsg_direct_bare_phone_normalized_to_to(monkeypatch, tmp_path):
     from hermes_imsg_cli.adapter import ImsgAdapter, send_imsg_direct
 
-    calls = []
+    cli_calls = []
+    rpc_calls = []
 
     async def fake_run(self, args):
-        calls.append(args)
-        return 0, json.dumps({"guid": "OUT"}), ""
+        cli_calls.append(args)
+        return 0, json.dumps({
+            "advanced_features": True,
+            "v2_ready": True,
+            "rpc_methods": ["send"],
+            "selectors": {},
+        }), ""
+
+    async def fake_rpc(self, request):
+        rpc_calls.append(request)
+        return 0, json.dumps({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {"guid": "OUT"},
+        }), ""
 
     monkeypatch.setattr(ImsgAdapter, "_run_imsg", fake_run)
-    # Bare 11-digit phone (as core's parser would hand it to us) → --to +E.164.
+    monkeypatch.setattr(ImsgAdapter, "_run_imsg_rpc", fake_rpc)
+    # Bare 11-digit phone (as core's parser would hand it to us) becomes +E.164.
     result = await send_imsg_direct(
         {"binary": "imsg", "state_file": str(tmp_path / "state.json")}, "12025550105", "hi"
     )
     assert result["success"] is True
-    assert calls[0][:3] == ["send", "--to", "+12025550105"]
+    assert cli_calls == [["status", "--json"]]
+    assert rpc_calls[0]["params"]["to"] == "+12025550105"
+    assert rpc_calls[0]["params"]["service"] == "auto"
+    assert rpc_calls[0]["params"]["transport"] == "bridge"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("target", "expected"),
+    ("target", "expected_target", "expected_service"),
     [
-        ("chat_guid:iMessage;+;group", ["send", "--chat-guid", "iMessage;+;group"]),
-        ("chat_identifier:group", ["send", "--chat-identifier", "group"]),
-        ("sms:+12025550105", ["send", "--to", "+12025550105"]),
+        ("chat_guid:iMessage;+;group", {"chat_guid": "iMessage;+;group"}, "auto"),
+        ("chat_identifier:group", {"chat_identifier": "group"}, "auto"),
+        ("sms:+12025550105", {"to": "+12025550105"}, "sms"),
     ],
 )
 async def test_send_imsg_direct_preserves_explicit_targets(
-    monkeypatch, tmp_path, target, expected
+    monkeypatch, tmp_path, target, expected_target, expected_service
 ):
     from hermes_imsg_cli.adapter import ImsgAdapter, send_imsg_direct
 
-    calls = []
+    cli_calls = []
+    rpc_calls = []
 
     async def fake_run(self, args):
-        calls.append(args)
+        cli_calls.append(args)
+        if args[0] == "status":
+            return 0, json.dumps({
+                "advanced_features": True,
+                "v2_ready": True,
+                "rpc_methods": ["send"],
+                "selectors": {},
+            }), ""
         return 0, json.dumps({"guid": "OUT"}), ""
 
+    async def fake_rpc(self, request):
+        rpc_calls.append(request)
+        return 0, json.dumps({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {"guid": "OUT"},
+        }), ""
+
     monkeypatch.setattr(ImsgAdapter, "_run_imsg", fake_run)
+    monkeypatch.setattr(ImsgAdapter, "_run_imsg_rpc", fake_rpc)
     result = await send_imsg_direct(
         {"binary": "imsg", "state_file": str(tmp_path / "state.json")},
         target,
         "hello",
     )
     assert result["success"] is True
-    assert calls[0][:3] == expected
-    if target.startswith("sms:"):
-        assert calls[0][-3:] == ["--service", "sms", "--json"]
+    if expected_service == "sms":
+        assert cli_calls[0][:3] == ["send", "--to", expected_target["to"]]
+        assert cli_calls[0][-3:] == ["--service", "sms", "--json"]
+        assert rpc_calls == []
+    else:
+        assert cli_calls == [["status", "--json"]]
+        assert {
+            key: rpc_calls[0]["params"][key] for key in expected_target
+        } == expected_target
+        assert rpc_calls[0]["params"]["service"] == expected_service
+        assert rpc_calls[0]["params"]["transport"] == "bridge"
 
 
 @pytest.mark.asyncio

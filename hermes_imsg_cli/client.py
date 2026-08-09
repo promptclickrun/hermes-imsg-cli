@@ -221,24 +221,13 @@ class ImsgClient:
         )
         formatted = extract_markdown_format_runs(text)
         formatting = formatted["ranges"]
-        if formatting:
-            target_names = {
-                "--chat-id": "chat_id",
-                "--chat-guid": "chat_guid",
-                "--chat-identifier": "chat_identifier",
-                "--to": "to",
-            }
-            target_kwargs = {target_names[target_flag]: target_value}
-            request = cli.build_send_rpc_request(
-                "hermes-send",
-                text=formatted["text"],
-                service=effective_service or "auto",
-                region=region,
-                file_path=file,
-                formatting=formatting,
-                **target_kwargs,
-            )
-            return await self._rpc_mutation_one(request)
+        target_names = {
+            "--chat-id": "chat_id",
+            "--chat-guid": "chat_guid",
+            "--chat-identifier": "chat_identifier",
+            "--to": "to",
+        }
+        target_kwargs = {target_names[target_flag]: target_value}
         media = [(file, False)] if file else None
         plain_target = {
             "--chat-id": target_value,
@@ -246,7 +235,7 @@ class ImsgClient:
             "--chat-identifier": f"chat_identifier:{target_value}",
             "--to": target_value,
         }[target_flag]
-        return await self._mutation_one(cli.build_plain_send_args(
+        legacy_args = cli.build_plain_send_args(
             plain_target,
             text,
             is_phone=target_flag == "--to",
@@ -254,7 +243,31 @@ class ImsgClient:
             service=effective_service,
             region=region,
             no_sms_fallback=no_sms_fallback,
-        ))
+        )
+        if file is not None or effective_service == "sms":
+            return await self._mutation_one(legacy_args)
+        if formatting:
+            request = cli.build_send_rpc_request(
+                "hermes-send",
+                text=formatted["text"],
+                service=effective_service or "auto",
+                region=region,
+                formatting=formatting,
+                **target_kwargs,
+            )
+            return await self._rpc_mutation_one(request)
+        capabilities = await self.capabilities()
+        if capabilities.supports_bridge_rpc_method("send"):
+            request = cli.build_send_rpc_request(
+                "hermes-send",
+                text=text,
+                service=effective_service or "auto",
+                region=region,
+                transport="bridge",
+                **target_kwargs,
+            )
+            return await self._rpc_mutation_one(request)
+        return await self._mutation_one(legacy_args)
 
     async def mark_read(self, chat_id: str) -> bool:
         await self._one(cli.build_read_args(chat_id), required=False)

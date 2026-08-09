@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import subprocess
 from typing import Any, Iterable, Optional, Union
 
@@ -28,6 +30,11 @@ _MAX_ROWID_DIGITS = 19
 # this module.  Short enough to keep bounded-timeout callers responsive, long
 # enough for a well-behaved child to exit cleanly on SIGTERM.
 DEFAULT_TERMINATE_GRACE = 2.0
+
+# A new POSIX session makes the direct ``imsg`` process the leader of an
+# isolated process group. Cancellation can then stop helpers such as
+# ``osascript`` along with their parent instead of orphaning them.
+_POSIX_PROCESS_GROUPS = os.name == "posix"
 
 
 class ImsgJSONError(ValueError):
@@ -687,23 +694,72 @@ def extract_message_id(stdout: str) -> Optional[str]:
 # Subprocess execution (single choke-point)
 # ---------------------------------------------------------------------------
 
+def _subprocess_group_kwargs() -> dict[str, bool]:
+    """Return platform-safe subprocess isolation options."""
+    if _POSIX_PROCESS_GROUPS:
+        return {"start_new_session": True}
+    return {}
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def _wait_for_process_group_exit(process_group_id: int, timeout: float) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, timeout)
+    while _process_group_exists(process_group_id):
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(0.05, remaining))
+    return True
+
+
 async def _terminate_then_kill(
     proc: "asyncio.subprocess.Process", *, grace: Optional[float] = None
 ) -> None:
-    """Bounded child-process shutdown: SIGTERM, wait *grace* seconds, then SIGKILL.
+    """Bounded subprocess shutdown: SIGTERM, then SIGKILL after *grace*.
 
     A cancelled/timed-out ``imsg`` invocation must never leave an orphaned
-    child running.  ``terminate()`` gives a well-behaved process a chance to
-    exit cleanly; a process that ignores SIGTERM (hung, wedged, or adversarial)
-    is bounded by *grace* and then force-killed so cleanup can never hang
-    indefinitely.  ``grace`` defaults to the module-level
+    helper running. On POSIX, runners start an isolated process group and this
+    function signals that whole group. Other platforms retain direct-process
+    terminate/kill behavior. ``grace`` defaults to the module-level
     ``DEFAULT_TERMINATE_GRACE`` (resolved at call time, not import time, so
     tests can shrink it via monkeypatching for fast deterministic runs).
     """
+    effective_grace = DEFAULT_TERMINATE_GRACE if grace is None else grace
+
+    if _POSIX_PROCESS_GROUPS:
+        process_group_id = proc.pid
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            if proc.returncode is None:
+                await proc.wait()
+            return
+
+        exited = await _wait_for_process_group_exit(process_group_id, effective_grace)
+        if not exited:
+            try:
+                os.killpg(process_group_id, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if proc.returncode is None:
+            await proc.wait()
+        if not exited:
+            await _wait_for_process_group_exit(process_group_id, effective_grace)
+        return
+
     if proc.returncode is not None:
         return
     proc.terminate()
-    effective_grace = DEFAULT_TERMINATE_GRACE if grace is None else grace
     try:
         await asyncio.wait_for(proc.wait(), timeout=effective_grace)
     except asyncio.TimeoutError:
@@ -719,14 +775,14 @@ async def run_imsg(binary: str, args: list[str]) -> tuple[int, str, str]:
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **_subprocess_group_kwargs(),
     )
     try:
         stdout_b, stderr_b = await proc.communicate()
     except asyncio.CancelledError:
         # ``ImsgClient`` and the adapter impose timeouts with wait_for().  Do not
-        # leave a timed-out send/read child running after its coroutine is
-        # cancelled: terminate first, then bound the wait before killing so a
-        # child that ignores SIGTERM can never hang cleanup indefinitely.
+        # leave a timed-out send/read process tree running after its coroutine
+        # is cancelled. Cleanup is bounded even when a process ignores SIGTERM.
         await _terminate_then_kill(proc)
         raise
     return (
@@ -752,6 +808,7 @@ async def run_imsg_rpc(binary: str, request: dict[str, Any]) -> tuple[int, str, 
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **_subprocess_group_kwargs(),
     )
     assert proc.stdin is not None
     assert proc.stdout is not None
@@ -771,8 +828,8 @@ async def run_imsg_rpc(binary: str, request: dict[str, Any]) -> tuple[int, str, 
             "utf-8", errors="replace"
         )
     except asyncio.CancelledError:
-        # Bounded terminate-then-kill: never leave an orphaned `imsg rpc`
-        # process running past a short grace period.
+        # Bounded terminate-then-kill for the complete POSIX process group or
+        # the direct process on other platforms.
         await _terminate_then_kill(proc)
         raise
     except Exception:

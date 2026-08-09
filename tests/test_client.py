@@ -69,17 +69,25 @@ async def test_client_history_and_search_use_source_backed_builders():
 
 
 @pytest.mark.asyncio
-async def test_client_send_returns_first_ndjson_object():
+async def test_client_legacy_send_returns_first_ndjson_object():
     runner = FakeRunner([(0, json.dumps({"status": "sent", "guid": "G"}), "")])
     client = ImsgClient("imsg", runner=runner)
-    result = await client.send("+12025550100", "hello", service="auto")
+    result = await client.send("sms:+12025550100", "hello")
     assert result["guid"] == "G"
     assert runner.calls[0][1][:3] == ["send", "--to", "+12025550100"]
 
 
 @pytest.mark.asyncio
 async def test_client_send_requires_json_confirmation():
-    client = ImsgClient("imsg", runner=FakeRunner([(0, "", "")]))
+    client = ImsgClient(
+        "imsg",
+        runner=FakeRunner(
+            [
+                (0, action_status(), ""),
+                (0, "", ""),
+            ]
+        ),
+    )
     with pytest.raises(ImsgCommandError, match="no JSON object"):
         await client.send("42", "hello")
 
@@ -197,10 +205,136 @@ async def test_client_markdown_send_uses_rpc_formatting_ranges():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "expected_target"),
+    [
+        ("16", {"chat_id": 16}),
+        ("chat_guid:iMessage;+;group", {"chat_guid": "iMessage;+;group"}),
+        ("chat_identifier:group-chat", {"chat_identifier": "group-chat"}),
+        ("imessage:+12025550100", {"to": "+12025550100"}),
+        ("+12025550101", {"to": "+12025550101"}),
+    ],
+)
+async def test_client_plain_imessage_send_uses_advertised_bridge_rpc(
+    target, expected_target
+):
+    cli_runner = FakeRunner([(0, action_status("send"), "")])
+    rpc_runner = FakeRpcRunner(
+        [
+            (
+                0,
+                json.dumps(
+                    {"jsonrpc": "2.0", "id": "hermes-send", "result": {"guid": "OUT"}}
+                ),
+                "",
+            )
+        ]
+    )
+    client = ImsgClient("imsg", runner=cli_runner, rpc_runner=rpc_runner)
+
+    result = await client.send(target, "hello")
+
+    assert result == {"guid": "OUT"}
+    assert [call[1] for call in cli_runner.calls] == [["status", "--json"]]
+    request = rpc_runner.calls[0][1]
+    assert request["method"] == "send"
+    assert request["params"] == {
+        **expected_target,
+        "text": "hello",
+        "service": "imessage" if target.startswith("imessage:") else "auto",
+        "transport": "bridge",
+    }
+
+
+@pytest.mark.asyncio
+async def test_client_plain_send_falls_back_only_when_bridge_send_is_unavailable():
+    cli_runner = FakeRunner(
+        [
+            (0, action_status(), ""),
+            (0, json.dumps({"guid": "LEGACY"}), ""),
+        ]
+    )
+    rpc_runner = FakeRpcRunner([])
+    client = ImsgClient("imsg", runner=cli_runner, rpc_runner=rpc_runner)
+
+    result = await client.send("16", "hello")
+
+    assert result == {"guid": "LEGACY"}
+    assert [call[1] for call in cli_runner.calls] == [
+        ["status", "--json"],
+        ["send", "--chat-id", "16", "--text", "hello", "--json"],
+    ]
+    assert rpc_runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_client_plain_send_fails_closed_when_capability_discovery_fails():
+    cli_runner = FakeRunner([(7, "", "status unavailable")])
+    rpc_runner = FakeRpcRunner([])
+    client = ImsgClient("imsg", runner=cli_runner, rpc_runner=rpc_runner)
+
+    with pytest.raises(ImsgCommandError, match="status unavailable"):
+        await client.send("16", "hello")
+
+    assert [call[1] for call in cli_runner.calls] == [["status", "--json"]]
+    assert rpc_runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_client_plain_send_never_falls_back_after_rpc_error():
+    cli_runner = FakeRunner([(0, action_status("send"), "")])
+    rpc_runner = FakeRpcRunner(
+        [
+            (
+                0,
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "hermes-send",
+                        "error": {"code": -32000, "message": "bridge refused"},
+                    }
+                ),
+                "",
+            )
+        ]
+    )
+    client = ImsgClient("imsg", runner=cli_runner, rpc_runner=rpc_runner)
+
+    with pytest.raises(ImsgCommandError, match="bridge refused"):
+        await client.send("16", "hello")
+
+    assert [call[1] for call in cli_runner.calls] == [["status", "--json"]]
+    assert len(rpc_runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_client_plain_send_never_falls_back_after_rpc_timeout():
+    cli_runner = FakeRunner([(0, action_status("send"), "")])
+    rpc_calls = []
+
+    async def slow_rpc(binary, request):
+        rpc_calls.append((binary, request))
+        await asyncio.sleep(1)
+        return 0, "", ""
+
+    client = ImsgClient(
+        "imsg", runner=cli_runner, rpc_runner=slow_rpc, timeout=0.001
+    )
+
+    with pytest.raises(ImsgCommandError, match="timed out"):
+        await client.send("16", "hello")
+
+    assert [call[1] for call in cli_runner.calls] == [["status", "--json"]]
+    assert len(rpc_calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_client_plain_send_preserves_explicit_target_kinds():
     runner = FakeRunner(
         [
+            (0, action_status(), ""),
             (0, json.dumps({"guid": "GUID-SEND"}), ""),
+            (0, action_status(), ""),
             (0, json.dumps({"guid": "IDENTIFIER-SEND"}), ""),
             (0, json.dumps({"guid": "SMS-SEND"}), ""),
         ]
@@ -211,18 +345,64 @@ async def test_client_plain_send_preserves_explicit_target_kinds():
     await client.send("chat_identifier:group-chat", "hello")
     await client.send("sms:+12025550100", "hello")
 
-    assert runner.calls[0][1][:3] == [
+    assert runner.calls[1][1][:3] == [
         "send",
         "--chat-guid",
         "iMessage;+;group",
     ]
-    assert runner.calls[1][1][:3] == [
+    assert runner.calls[3][1][:3] == [
         "send",
         "--chat-identifier",
         "group-chat",
     ]
-    assert runner.calls[2][1][:3] == ["send", "--to", "+12025550100"]
-    assert runner.calls[2][1][-3:] == ["--service", "sms", "--json"]
+    assert runner.calls[4][1][:3] == ["send", "--to", "+12025550100"]
+    assert runner.calls[4][1][-3:] == ["--service", "sms", "--json"]
+
+
+@pytest.mark.asyncio
+async def test_client_attachment_send_stays_on_legacy_cli(tmp_path):
+    attachment = tmp_path / "attachment.txt"
+    attachment.write_text("synthetic attachment")
+    cli_runner = FakeRunner([(0, json.dumps({"guid": "FILE"}), "")])
+    rpc_runner = FakeRpcRunner([])
+    client = ImsgClient("imsg", runner=cli_runner, rpc_runner=rpc_runner)
+
+    result = await client.send("16", "**caption**", file=str(attachment))
+
+    assert result == {"guid": "FILE"}
+    assert cli_runner.calls[0][1] == [
+        "send",
+        "--chat-id",
+        "16",
+        "--text",
+        "**caption**",
+        "--file",
+        str(attachment),
+        "--json",
+    ]
+    assert rpc_runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_client_explicit_sms_with_markdown_stays_on_legacy_cli():
+    cli_runner = FakeRunner([(0, json.dumps({"guid": "SMS"}), "")])
+    rpc_runner = FakeRpcRunner([])
+    client = ImsgClient("imsg", runner=cli_runner, rpc_runner=rpc_runner)
+
+    result = await client.send("sms:+12025550100", "**hello**")
+
+    assert result == {"guid": "SMS"}
+    assert cli_runner.calls[0][1] == [
+        "send",
+        "--to",
+        "+12025550100",
+        "--text",
+        "**hello**",
+        "--service",
+        "sms",
+        "--json",
+    ]
+    assert rpc_runner.calls == []
 
 
 @pytest.mark.asyncio

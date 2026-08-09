@@ -22,9 +22,14 @@ management through per-action private bridge capability checks.
 > inbound message. The plugin does not resolve a GUID for routing, match a
 > participant, or guess across chats.
 
-The ordinary reply path always uses `imsg send --chat-id` with the captured
-rowid. Explicit proactive sends may use a rowid, chat GUID, chat identifier,
-phone number, or email address.
+The ordinary reply path always preserves the captured rowid. For plain text,
+the plugin first checks `imsg status --json` and uses the bridge JSON-RPC
+`send` method with `transport=bridge` when that ready bridge advertises the
+method. If discovery positively shows that `send` is unavailable, it uses
+`imsg send --chat-id` instead. It never retries through the legacy command
+after an RPC attempt. Explicit SMS and attachment sends stay on `imsg send`.
+Explicit proactive sends may use a rowid, chat GUID, chat identifier, phone
+number, or email address.
 
 When Hermes supplies `reply_to`, the plugin uses a native threaded reply only
 if that message GUID and the corresponding chat GUID were learned from the
@@ -58,6 +63,12 @@ or required permissions are missing, it fails with an installation hint from
 `hermes_imsg_cli.config.requirements_report()`.
 
 ## Install and remove the plugin
+
+The agent-facing Hermes skill is bundled separately at
+[`skills/apple/hermes-imsg-plugin`](skills/apple/hermes-imsg-plugin/SKILL.md).
+Keep its `SKILL.md` and complete `references/` directory together when copying
+it to `$HERMES_HOME/skills/apple/hermes-imsg-plugin`. The local plugin installer
+below manages the runtime plugin only; it does not install or update the skill.
 
 From the repository root, run:
 
@@ -215,11 +226,12 @@ The plugin registers `standalone_sender_fn` and sets
 `send_message` tool can therefore reach iMessage without a live gateway
 adapter.
 
-The standalone path supports text and file attachments through
-`imsg send --file`. It validates every attachment before sending. A missing or
-unsafe attachment returns a structured error rather than a false success.
-Because upstream accepts one file per command, the plugin sends multiple files
-separately and stops at the first failure. A partial failure reports
+The standalone path uses the same capability-gated RPC route for ordinary
+text and supports file attachments through `imsg send --file`. It validates
+every attachment before sending. A missing or unsafe attachment returns a
+structured error rather than a false success. Because upstream accepts one
+file per command, the plugin sends multiple files separately and stops at the
+first failure. A partial failure reports
 `failed_index`, `attempted_attachments`, and `succeeded_message_ids`.
 
 ### E.164 normalization in stock Hermes
@@ -236,9 +248,11 @@ in that list. The target therefore reaches this plugin as follows:
 The plugin handles this in the standalone send path through
 `hermes_imsg_cli.config.normalize_imsg_target`. An all-digit target with at
 least `IMSG_PHONE_MIN_DIGITS` digits, `10` by default, is treated as a phone
-number and sent with `imsg send --to`. A 10-digit number receives
+number and normalized to E.164. A 10-digit number receives
 `IMSG_DEFAULT_COUNTRY_CODE`, which defaults to `+1`. Shorter numeric targets
-remain chat rowids and use `--chat-id`.
+remain chat rowids. Ordinary text uses the normalized value as the exact RPC
+`to` or `chat_id` target when bridge `send` is available, with legacy command
+flags used only by the compatibility path.
 
 Use these target forms:
 
@@ -299,10 +313,12 @@ Vote and unvote selectors may be an exact option UUID, a one-based index, or
 case-insensitive option text. Unvote removes only the resolved option. Polls
 accept 2 to 12 options and an optional same-chat reply reference.
 
-Before every advanced mutation, the client runs the read-only
+Before every capability-gated bridge mutation, the client runs the read-only
 `imsg status --json` check. It requires the private bridge flags, the action's
-advertised RPC method, and any required selector. Missing capability returns a
-structured failure before the mutation command starts.
+advertised RPC method, and any required selector. Advanced actions fail before
+mutation when capability is missing. Ordinary plain text alone may use the
+legacy send command when discovery positively shows that bridge `send` is
+unavailable.
 
 Native actions require the optional bridge started by `imsg launch`. The plugin
 may re-arm an already configured bridge when `auto_launch` is enabled. It does
@@ -311,10 +327,12 @@ security settings.
 
 ## Public and advanced feature boundaries
 
-Chat listing, group lookup, history, search, watch, plain send, file send, and
-the most-recent-message standard reaction path use the local Messages database
-and Messages automation. Basic operation does not require private bridge
-injection.
+Chat listing, group lookup, history, search, watch, file send, explicit SMS,
+and the most-recent-message standard reaction path use the local Messages
+database and Messages automation. Ordinary plain text prefers bridge RPC when
+the ready bridge advertises `send`, then uses Messages automation only when
+read-only discovery shows that method is unavailable. Basic operation remains
+compatible with installations that do not provide private bridge injection.
 
 Targeted tapback add and remove, edit, unsend, threaded reply, effects, native
 polls, group management, read receipts, and typing indicators use the private
@@ -367,9 +385,11 @@ plugin's operating contract:
   for phone numbers, email addresses, home-directory paths, and GUID-like
   identifiers before they reach a log line or agent-visible error. Plugin-owned
   rule, participant, and action logs omit the known chat rowid.
-- A timed-out or cancelled subprocess receives a terminate signal first. The
-  plugin bounds that wait and then force-kills a child that does not exit, so
-  cleanup cannot hang indefinitely.
+- A timed-out or cancelled subprocess receives a terminate signal first. On
+  POSIX, the plugin isolates each invocation in a process group and signals
+  the whole group so helpers such as `osascript` cannot survive their parent.
+  It bounds that wait and then force-kills the group if needed. Non-POSIX
+  platforms retain bounded direct-process cleanup.
 - The platform registry deliberately leaves `pii_safe` unset. The
   `imsg_action` and `imsg_poll` tools must receive exact conversation and
   message references; hashing those values would break native actions without

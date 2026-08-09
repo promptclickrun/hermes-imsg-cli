@@ -176,6 +176,20 @@ replaying an event whose later agent invocation failed.
   and report a deterministic partial failure.
 - A trusted rich reply accepts at most one attachment.
 
+## Plain-send transport decisions
+
+- Preserve the exact caller-selected rowid, chat GUID, chat identifier, or
+  recipient handle across capability discovery.
+- For ordinary plain text, use JSON-RPC `send` with `transport=bridge` only
+  when a ready bridge advertises that method.
+- Use legacy `imsg send` only before mutation when discovery positively shows
+  that bridge `send` is unavailable. A discovery error fails closed.
+- Never retry through legacy send after an RPC attempt, timeout, or ambiguous
+  failure because that could duplicate a message.
+- Keep explicit SMS and every attachment send on the legacy command path.
+- Start each POSIX CLI or RPC subprocess in its own process group and signal
+  the complete group on cancellation. Keep direct-process cleanup elsewhere.
+
 ## Reaction decisions
 
 The normal adapter reaction helper supports the six reliable standard
@@ -219,5 +233,7 @@ unauthenticated API and webhook contexts.
 | 2026-08-09 | Centralize all native mutations in `imsg_action` and route poll compatibility through it. | One resolver and capability boundary prevents divergent safety behavior. |
 | 2026-08-09 | Convert supported markup to native UTF-16 ranges. | Messages can render authored emphasis without exposing markup tokens. |
 | 2026-08-09 | Gate each native action from the live status object. | Private bridge availability is granular and may change across host versions. |
+| 2026-08-09 | Prefer advertised bridge RPC for ordinary plain text and allow legacy fallback only before mutation. | AppleScript send can hang on newer macOS releases, while retrying after an ambiguous RPC result can duplicate delivery. |
+| 2026-08-09 | Cancel POSIX subprocesses by process group. | Terminating only `imsg` can leave helper grandchildren such as `osascript` running. |
 | 2026-08-09 | Require authenticated owners for group mutations from messaging surfaces. | Conversation access must not imply authority to change group identity or membership. |
 | 2026-08-09 | Keep exact identifiers visible to the native action tools. | Hashing rowids or GUIDs would break same-chat validation and native targeting. |
