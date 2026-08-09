@@ -18,13 +18,14 @@ Messages chat.db / Messages.app
        Hermes gateway / cron
 ```
 
-This repository is a **Hermes plugin**. It does not vendor OpenClaw Swift code, read `chat.db` itself, implement JSON-RPC, or emulate an OpenClaw process. `imsg` remains the source of truth for Messages schema compatibility, filesystem watching, WAL rotation, contact resolution, AppleScript staging, and optional attachment conversion.
+This repository is a **Hermes plugin**. It does not vendor OpenClaw Swift code, read `chat.db` itself, host a persistent JSON-RPC transport, or emulate an OpenClaw process. `imsg` remains the source of truth for Messages schema compatibility, filesystem watching, WAL rotation, contact resolution, AppleScript staging, and optional attachment conversion.
 
 ## Module responsibilities
 
 - `cli.py`: pure, testable argument builders (including poll CLI and non-executing RPC request composition); NDJSON parser; the only generic subprocess runners.
 - `client.py`: Hermes-independent async convenience API for bounded CLI calls. It adds timeouts, structured PII-redacted failures, object-shape checks, and fail-before-mutation poll capability probes. It is not a protocol adapter.
 - `adapter.py`: Hermes `BasePlatformAdapter`, event conversion, policy enforcement, same-chat routing, watch lifecycle, read/typing/reaction/poll integration, explicit `imsg_poll` tool registration, and standalone cron send.
+- `attachments.py`: Hermes-independent outbound regular-file validation shared by adapter, standalone, and direct client sends.
 - `rules.py`: import-safe default-deny authorization model and redaction helpers.
 - `config.py`: plugin-owned YAML/environment translation, binary checks, state path, and the Hermes E.164 parser workaround.
 
@@ -35,7 +36,7 @@ This repository is a **Hermes plugin**. It does not vendor OpenClaw Swift code, 
 3. **Self messages never invoke the agent.** This check occurs before policy matching, including `allow_all`.
 4. **Default deny.** If no rule matches, `silent_drop` is the default. DM and group allowlists remain separate. Participant list entries from event data are type-validated (string handles only); non-scalar/boolean entries are dropped rather than coerced.
 5. **No permission automation.** The plugin never edits TCC, disables SIP, signs/injects a dylib, or signs into Messages.
-6. **No payload leakage on parser/log surfaces.** NDJSON exceptions identify a line number but do not quote message text. Raw `imsg watch` lines are never logged, even on parse failure. Subprocess errors, exceptions, and diagnostics are redacted for phone numbers, emails, home-directory paths, and GUID-like identifiers before reaching a log line or an agent-visible error.
+6. **No payload leakage on parser/log surfaces.** NDJSON exceptions identify a line number but do not quote message text. Raw `imsg watch` lines are never logged, even on parse failure. Subprocess errors, exceptions, and diagnostics are redacted for phone numbers, emails, home-directory paths, and GUID-like identifiers before reaching a log line or an agent-visible error. Plugin-owned rule, participant, and action logs omit the known chat rowid.
 7. **Private capability honesty.** Read receipts, typing, and targeted tapbacks can fail when the bridge is absent. Basic reads/watch/plain sends continue. Rich/threaded replies are not attempted at all (see below), independent of bridge availability.
 8. **Polls are explicit and capability-gated.** Poll creation/voting is never inferred from text. `status --json` must advertise both the operation method and required selector before the mutation command runs; absence is an error, not success.
 9. **No participant routing for polls.** Inbound-originated polls use the captured exact rowid. Explicit proactive operations may use an exact chat GUID; phone/email handles are not accepted.
@@ -91,13 +92,15 @@ The public `react` command supports exactly six standard tapbacks and targets th
 
 ## Poll decisions
 
-Hermes executes native polls through short-lived upstream CLI commands, not an
-embedded `imsg rpc` process. Pure RPC request builders document/test the pinned
-wire shape for parity, while preserving the repository boundary. Before every
-mutation, the client reads `status --json`: create requires `poll.send` plus
+Hermes creates a native poll through one bounded `imsg rpc` subprocess using
+the canonical `poll.send` JSON-RPC method. This avoids the CLI creation path
+that can produce a second poll in some bridge/runtime combinations. Vote and
+unvote remain short-lived `imsg poll vote` and `imsg poll unvote` commands.
+The plugin does not host a persistent RPC process. Before every mutation, the
+client reads `status --json`: create requires `poll.send` plus
 `pollPayloadMessage`; vote requires `poll.vote` plus `pollVoteMessage`; unvote
-requires an advertised unvote alias plus `pollVoteMessage`. An older binary or
-missing injected selector therefore fails before the `poll` command runs.
+requires an advertised unvote alias plus `pollVoteMessage`. An older binary,
+malformed status response, or missing injected selector fails before mutation.
 
 Creation accepts question, at least two non-empty options, optional caption
 override, and optional reply-to GUID. The poll payload may succeed while its
@@ -114,7 +117,7 @@ poll, option membership, and current selection for unvote.
 | 2026-07-13 | Fix strict participant lookup from invalid `chats --chat-id` to `group --chat-id`. | Verified in current command source. |
 | 2026-07-13 | Parse upstream output as NDJSON, while accepting a single compatibility array. | Upstream guarantees one JSON object per line, not a JSON array. |
 | 2026-07-13 | Preserve unknown schema keys and raw payloads. | Upstream schema is additive; re-modeling it would lose 0.13 fields and create adapter drift. |
-| 2026-07-13 | Expose safe bounded reads through a native async client/adapter API, but do not embed RPC. | Meets Hermes needs without creating an OpenClaw adapter. |
+| 2026-07-13 | Expose safe bounded reads through a native async client/adapter API, but do not embed a persistent RPC transport. | Meets Hermes needs without creating an OpenClaw adapter. |
 | 2026-07-13 | Keep private IMCore mutations out of the plugin and document direct safe alternatives. | They require SIP-off injection and have no stable public Messages automation equivalent. |
 | 2026-07-13 | Preserve existing bridge auto-launch and plain reply fallback, but label both clearly. | No existing Hermes behavior removed; operators can disable bridge launch. |
 | 2026-07-13 | Expose native polls only as explicit `imsg_poll` send/vote/unvote actions, not as ordinary text-send inference. | Polls mutate a native extension, require extra selectors, have duplicate-retry risk around the best-effort caption, and need exact poll/option identity; explicit intent keeps routing and failure semantics auditable. |

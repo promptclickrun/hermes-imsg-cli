@@ -241,7 +241,7 @@ Before file delivery the standalone path verifies every file exists and is a gen
 5. Do not disable SIP merely to make the bot work. Basic chats/history/search/watch/plain send/react do not require it. Native polls do require the optional injected bridge; enabling that environment remains an operator decision outside this plugin.
 6. If advanced features are deliberately tested, follow upstream's exact versioned documentation, understand macOS 26 library-validation/private-entitlement limits, and re-enable SIP afterward.
 7. Keep allowlists/rules narrow. `allow_all` and fallback `allow` are unsafe for an agent connected to personal Messages.
-8. Treat attachment paths and message JSON as personal data. Logs redact phone/email strings, home-directory paths, and GUID-like identifiers, and never include a raw `imsg watch` line, but debug logs and upstream stderr can still reveal operational context.
+8. Treat attachment paths and message JSON as personal data. Logs redact phone/email strings, home-directory paths, and GUID-like identifiers, never include a raw `imsg watch` line, and omit known chat rowids from plugin-owned rule, participant, and action messages. Debug logs and upstream stderr can still reveal operational context.
 9. Outbound attachments must be regular files; a symlink is rejected even if it points at a legitimate file, since it could be swapped out between validation and use.
 10. The resumable cursor (`imsg_state.json`) is written atomically with owner-only (`0600`) permissions.
 11. Run `python scripts/privacy_scan.py` before publishing any change that adds example data (phone numbers, paths, names); see `SECURITY.md` for the full policy and how to report a vulnerability.

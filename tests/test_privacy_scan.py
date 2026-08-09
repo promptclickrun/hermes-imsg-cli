@@ -35,6 +35,17 @@ def test_scanner_allows_reserved_nanp_range(tmp_path):
     assert findings == []
 
 
+def test_scanner_ignores_numeric_run_inside_commit_sha_but_still_flags_phone(tmp_path):
+    mixed = tmp_path / "mixed.yml"
+    mixed.write_text(
+        "uses: action@fc324d3547104276b827a68afc52ff2a11cc49c9\n"
+        "support: +14155551212\n"
+    )
+    findings = scanner.scan_file(mixed)
+    assert len(findings) == 1
+    assert "+14155551212" in findings[0]
+
+
 def test_scanner_flags_personal_home_path(tmp_path):
     bad = tmp_path / "bad.sh"
     bad.write_text("PY=/Users/realperson/venv/bin/python3")

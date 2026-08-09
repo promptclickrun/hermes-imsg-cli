@@ -44,7 +44,8 @@ Any change that weakens one of these is a regression, not a feature:
 - **No PII in logs.** Raw `imsg watch` lines are never logged. Errors and
   diagnostics are redacted (phone numbers, emails, home directory paths, and
   GUID-like identifiers) before they reach a log line or an agent-visible
-  error message.
+  error message. Plugin-owned rule, participant, and action logs omit the known
+  chat rowid.
 - **Outbound attachments are regular files only.** Symlinks and special files
   (directories, FIFOs, sockets, device nodes) are rejected before being
   handed to `imsg send --file`.

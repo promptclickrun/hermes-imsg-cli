@@ -116,9 +116,10 @@ def check_imsg_requirements(binary: str | None = None, *, probe: bool = True) ->
         return False
     try:
         data = json.loads(result.stdout or "{}")
-    except Exception:
-        # Non-JSON but zero exit — treat as available.
-        return True
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
     return bool(
         data.get("basic_features")
         or data.get("basicFeatures")

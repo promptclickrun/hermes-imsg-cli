@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Native iMessage and SMS for stock Hermes on macOS, with exact Messages chat rowid reply routing.">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="theme-color" content="#ffffff">
+  <title>hermes-imsg-cli | Native Messages for stock Hermes</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to project content</a>
+
+  <header class="site-header">
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a class="project-name" href="#hero" aria-label="hermes-imsg-cli home">hermes-imsg-cli</a>
+      <div class="nav-links">
+        <a href="#routing">Routing</a>
+        <a href="#capabilities">Capabilities</a>
+        <a href="#install">Install</a>
+        <a href="#security">Security</a>
+      </div>
+      <a class="source-link" href="https://github.com/promptclickrun/hermes-imsg-cli" rel="noreferrer">GitHub source</a>
+    </nav>
+  </header>
+
+  <main id="main-content">
+    <section class="hero page-width" id="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="context-line">Open source / macOS 14+ / stock Hermes plugin API</p>
+        <h1 id="hero-title">Native Messages for stock Hermes.</h1>
+        <p class="hero-summary">
+          Native iMessage and SMS on macOS, backed by the local <code>imsg</code> CLI.
+          Every inbound reply uses the exact Messages chat rowid that produced it.
+        </p>
+        <p class="hero-contract">No Hermes core fork. No participant lookup for replies. No alternate destination.</p>
+        <div class="hero-actions" aria-label="Project actions">
+          <a class="button button-primary" href="#install">Install the plugin</a>
+          <a class="button button-secondary" href="https://github.com/promptclickrun/hermes-imsg-cli" rel="noreferrer">View source</a>
+        </div>
+        <p class="hero-requirement"><strong>Requires:</strong> macOS 14 or later, Messages.app signed in, local permissions, and <code>imsg</code>.</p>
+      </div>
+
+      <figure class="hero-route" aria-labelledby="hero-route-title">
+        <figcaption id="hero-route-title">Same-chat reply route</figcaption>
+        <ol class="route-sequence">
+          <li>
+            <span class="sequence-index">01</span>
+            <div><span>Inbound source</span><strong>Messages chat</strong><code>rowid 42</code></div>
+          </li>
+          <li>
+            <span class="sequence-index">02</span>
+            <div><span>Stock interface</span><strong>Hermes plugin API</strong><code>platform: imsg</code></div>
+          </li>
+          <li>
+            <span class="sequence-index">03</span>
+            <div><span>Outbound reply</span><strong>Local command</strong><code>imsg send --chat-id 42</code></div>
+          </li>
+        </ol>
+        <p class="route-invariant"><span>Routing invariant</span><strong>rowid in = rowid out</strong></p>
+      </figure>
+    </section>
+
+    <section class="section section-muted" id="routing" aria-labelledby="routing-title">
+      <div class="page-width">
+        <div class="section-heading split-heading">
+          <div>
+            <p class="section-label">Routing demonstration</p>
+            <h2 id="routing-title">The source chat determines the reply.</h2>
+          </div>
+          <p>Select an inbound event. The command updates from its captured positive rowid only. Caller metadata, participant handles, and cached GUIDs are not routing inputs.</p>
+        </div>
+
+        <div class="routing-interface">
+          <div class="route-selector" aria-labelledby="route-selector-title">
+            <h3 id="route-selector-title">Select an inbound chat</h3>
+            <div class="chat-choice-list" role="group" aria-label="Inbound chat examples">
+              <button class="chat-choice is-selected" type="button" data-chat-id="16" data-chat-name="Family planning" data-chat-message="Are we still on for six?" aria-pressed="true">
+                <span><strong>Family planning</strong><small>Are we still on for six?</small></span>
+                <code>rowid 16</code>
+              </button>
+              <button class="chat-choice" type="button" data-chat-id="42" data-chat-name="Project crew" data-chat-message="Can Hermes send the checklist?" aria-pressed="false">
+                <span><strong>Project crew</strong><small>Can Hermes send the checklist?</small></span>
+                <code>rowid 42</code>
+              </button>
+              <button class="chat-choice" type="button" data-chat-id="87" data-chat-name="Travel thread" data-chat-message="Which platform are we meeting at?" aria-pressed="false">
+                <span><strong>Travel thread</strong><small>Which platform are we meeting at?</small></span>
+                <code>rowid 87</code>
+              </button>
+            </div>
+          </div>
+
+          <div class="route-output" id="routing-stage">
+            <div class="route-output-header">
+              <h3>Resolved route</h3>
+              <span class="route-status">Local simulation</span>
+            </div>
+            <dl class="route-values">
+              <div>
+                <dt>Inbound chat</dt>
+                <dd id="route-source-name">Family planning</dd>
+              </div>
+              <div>
+                <dt>Message</dt>
+                <dd id="route-source-message">Are we still on for six?</dd>
+              </div>
+              <div>
+                <dt>Captured source</dt>
+                <dd><code id="route-source-id">chat_id = "16"</code></dd>
+              </div>
+              <div class="route-command-row">
+                <dt>Only permitted destination</dt>
+                <dd><code id="route-command">imsg send --chat-id 16</code></dd>
+              </div>
+            </dl>
+            <div class="route-progress" aria-hidden="true"><span></span></div>
+            <div class="route-action-row">
+              <button class="button button-primary" id="route-demo-run" type="button">Route this reply</button>
+              <p id="route-live" aria-live="polite">Ready to route rowid 16.</p>
+            </div>
+          </div>
+        </div>
+        <noscript><p class="noscript-note">The example shows rowid 16 without JavaScript. Enable JavaScript to select the other local examples.</p></noscript>
+      </div>
+    </section>
+
+    <section class="section page-width" id="capabilities" aria-labelledby="capabilities-title">
+      <div class="section-heading split-heading">
+        <div>
+          <p class="section-label">Public and advanced</p>
+          <h2 id="capabilities-title">A visible capability boundary.</h2>
+        </div>
+        <p>Basic operation uses public local interfaces with SIP enabled. Private IMCore features require the optional upstream bridge and deliberate operator setup.</p>
+      </div>
+
+      <div class="comparison-wrap">
+        <table class="capability-table">
+          <thead>
+            <tr>
+              <th scope="col">Capability</th>
+              <th scope="col">Public path</th>
+              <th scope="col">Optional bridge</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Chats, history, search, watch</th>
+              <td data-label="Public path">Available through local database reads</td>
+              <td data-label="Optional bridge">Not required</td>
+            </tr>
+            <tr>
+              <th scope="row">Plain text and regular-file sends</th>
+              <td data-label="Public path">Available through Messages automation</td>
+              <td data-label="Optional bridge">Not required</td>
+            </tr>
+            <tr>
+              <th scope="row">Six standard tapbacks</th>
+              <td data-label="Public path">Available through public <code>react</code></td>
+              <td data-label="Optional bridge">Only for targeted tapbacks</td>
+            </tr>
+            <tr>
+              <th scope="row">Native poll create, vote, unvote</th>
+              <td data-label="Public path">Unavailable</td>
+              <td data-label="Optional bridge">Capability-gated before mutation</td>
+            </tr>
+            <tr>
+              <th scope="row">Read receipts and typing</th>
+              <td data-label="Public path">Unavailable</td>
+              <td data-label="Optional bridge">Best effort when supported</td>
+            </tr>
+            <tr>
+              <th scope="row">System Integrity Protection</th>
+              <td data-label="Public path">Remains enabled</td>
+              <td data-label="Optional bridge">Upstream injection requires an operator-managed SIP-disabled environment</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="configuration-note">
+        <div>
+          <p class="section-label">Recommended starting point</p>
+          <h3>Use the public path on a normal SIP-enabled Mac.</h3>
+          <p>Turn off bridge launch and read receipt attempts until the advanced environment has been evaluated separately.</p>
+        </div>
+        <pre><code>platforms:
+  imsg:
+    extra:
+      auto_launch: false
+      send_read_receipts: false</code></pre>
+      </div>
+    </section>
+
+    <section class="section section-dark" id="install" aria-labelledby="install-title">
+      <div class="page-width install-layout">
+        <div class="section-heading install-heading">
+          <p class="section-label">Install and configure</p>
+          <h2 id="install-title">A local plugin with explicit prerequisites.</h2>
+          <p>The supported path keeps Hermes core unchanged. The installer creates the plugin symlink, preserves a configuration backup, and runs a discovery probe.</p>
+          <p class="install-boundary"><strong>It does not</strong> install <code>imsg</code>, grant TCC permissions, change SIP, sign in to Messages, or restart Hermes.</p>
+        </div>
+
+        <ol class="install-steps">
+          <li>
+            <div class="step-heading"><span>01</span><h3>Prepare the Mac</h3></div>
+            <p>Use macOS 14 or later with Messages.app signed in. Grant Full Disk Access to the launcher chain and Automation permission for sends.</p>
+            <div class="code-block">
+              <pre><code id="brew-command">brew install steipete/tap/imsg</code></pre>
+              <button class="copy-button" type="button" data-copy-target="brew-command" data-copy-label="Copy brew command">Copy</button>
+            </div>
+          </li>
+          <li>
+            <div class="step-heading"><span>02</span><h3>Install the plugin</h3></div>
+            <p>Clone the repository and run the local installer from the checkout.</p>
+            <div class="code-block">
+              <pre><code id="install-command">git clone https://github.com/promptclickrun/hermes-imsg-cli
+cd hermes-imsg-cli
+scripts/install-local.sh</code></pre>
+              <button class="copy-button" type="button" data-copy-target="install-command" data-copy-label="Copy install commands">Copy</button>
+            </div>
+          </li>
+          <li>
+            <div class="step-heading"><span>03</span><h3>Start from default deny</h3></div>
+            <p>Keep direct-message and group allowlists separate. Rules are first-match, and <code>silent_drop</code> remains the safe fallback.</p>
+            <div class="code-block code-block-config">
+              <pre><code id="config-command">platforms:
+  imsg:
+    enabled: true
+    extra:
+      auto_launch: false
+      send_read_receipts: false
+      allowed_handles: ["+12025550101"]
+      group_allowed_handles: ["+12025550101"]
+      allowed_chats: ["42"]
+      require_mention: true
+      fallback_action: silent_drop</code></pre>
+              <button class="copy-button" type="button" data-copy-target="config-command" data-copy-label="Copy configuration example">Copy</button>
+            </div>
+          </li>
+        </ol>
+        <p class="copy-status" id="copy-status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="section page-width" id="security" aria-labelledby="security-title">
+      <div class="section-heading split-heading">
+        <div>
+          <p class="section-label">Security properties</p>
+          <h2 id="security-title">Failures remain explicit.</h2>
+        </div>
+        <p>These properties are enforced at subprocess and adapter boundaries and covered by the repository test suite.</p>
+      </div>
+
+      <dl class="security-list">
+        <div>
+          <dt>Exact reply destination</dt>
+          <dd>Replies plain-send to the trusted positive rowid. Caller metadata cannot redirect them.</dd>
+        </div>
+        <div>
+          <dt>Fail-closed confirmation</dt>
+          <dd>Malformed status data, invalid targets, and empty or non-object send confirmations are errors.</dd>
+        </div>
+        <div>
+          <dt>Regular files only</dt>
+          <dd>Outbound attachments reject symlinks, directories, FIFOs, sockets, devices, and missing paths before send.</dd>
+        </div>
+        <div>
+          <dt>Restricted diagnostics</dt>
+          <dd>Raw watch payloads are never logged. Diagnostics redact phone numbers, email addresses, home paths, and GUID-like identifiers. Plugin-owned decision and action fields omit the known chat rowid.</dd>
+        </div>
+        <div>
+          <dt>Restrictive cursor state</dt>
+          <dd>The resumable rowid cursor is written atomically with owner-only <code>0600</code> permissions.</dd>
+        </div>
+        <div>
+          <dt>Operator-owned permissions</dt>
+          <dd>The plugin does not edit TCC, disable SIP, install bridge code, or sign in to Messages.</dd>
+        </div>
+      </dl>
+
+      <aside class="boundary-note" aria-labelledby="data-boundary-title">
+        <h3 id="data-boundary-title">Data boundary</h3>
+        <p>This repository invokes a local <code>imsg</code> executable. Hermes, model providers, and enabled tools have separate data flows outside this plugin's control. Review each before connecting personal Messages.</p>
+      </aside>
+    </section>
+
+    <section class="section section-muted" id="testing" aria-labelledby="testing-title">
+      <div class="page-width testing-layout">
+        <div class="section-heading testing-heading">
+          <p class="section-label">Verification record</p>
+          <h2 id="testing-title">Evidence is checked into the repository.</h2>
+          <p>The August 9, 2026 public-release addendum records the current result below against stock Hermes. The release path also validates the static site deterministically before a Pages artifact can be uploaded.</p>
+          <a class="text-link" href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/VERIFICATION.md" rel="noreferrer">Read the verification report</a>
+        </div>
+
+        <div class="verification-record">
+          <table>
+            <caption>Recorded current-tree result</caption>
+            <tbody>
+              <tr><th scope="row">Test suite</th><td>231 passed, 1 transitive deprecation warning</td></tr>
+              <tr><th scope="row">Privacy scan</th><td>No findings</td></tr>
+              <tr><th scope="row">Python sources</th><td>Byte compilation passed</td></tr>
+              <tr><th scope="row">Shell scripts</th><td>Syntax checks passed</td></tr>
+              <tr><th scope="row">Package</th><td>Wheel build passed</td></tr>
+            </tbody>
+          </table>
+          <p><strong>Non-mutation boundary:</strong> automated tests do not send messages, mark chats read, react, create polls, vote, or unvote against a live account.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section page-width" id="docs" aria-labelledby="docs-title">
+      <div class="section-heading split-heading docs-heading">
+        <div>
+          <p class="section-label">Documentation</p>
+          <h2 id="docs-title">Read the operating details.</h2>
+        </div>
+        <p>Requirements, capability limits, security properties, and evidence remain maintained beside the code.</p>
+      </div>
+
+      <nav class="document-index" aria-label="Project documentation">
+        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/README.md" rel="noreferrer"><span>README</span><small>Requirements, installation, configuration, and use</small></a>
+        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/ARCHITECTURE.md" rel="noreferrer"><span>Architecture</span><small>Module boundaries, invariants, and decisions</small></a>
+        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/OPERATIONS.md" rel="noreferrer"><span>Operations</span><small>Permissions, commands, and troubleshooting</small></a>
+        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/PARITY.md" rel="noreferrer"><span>Parity</span><small>Reviewed upstream command and capability status</small></a>
+        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/docs/VERIFICATION.md" rel="noreferrer"><span>Verification</span><small>Recorded tests, scans, builds, and known risks</small></a>
+        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/SECURITY.md" rel="noreferrer"><span>Security policy</span><small>Required properties and private reporting</small></a>
+      </nav>
+
+      <div class="support-links">
+        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/CONTRIBUTING.md" rel="noreferrer">Contributing</a>
+        <a href="https://github.com/promptclickrun/hermes-imsg-cli/blob/main/LICENSE" rel="noreferrer">MIT license</a>
+        <a href="https://github.com/nous-research" rel="noreferrer">Hermes upstream</a>
+        <a href="https://github.com/openclaw/imsg" rel="noreferrer">imsg upstream</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="page-width footer-content">
+      <p><strong>hermes-imsg-cli</strong><span>Native Messages transport for stock Hermes on macOS.</span></p>
+      <a href="https://github.com/promptclickrun/hermes-imsg-cli" rel="noreferrer">promptclickrun/hermes-imsg-cli</a>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1241,6 +1241,47 @@ async def test_handle_watch_line_never_logs_raw_content_on_parse_failure(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_rule_decision_log_omits_chat_rowid_and_redacts_rule_name(tmp_path, caplog):
+    adapter = make_adapter(tmp_path)
+    sensitive_rule_name = "confidential-contact-label +12025550100"
+    with caplog.at_level("DEBUG", logger="hermes_imsg_cli.adapter"):
+        allowed = await adapter._execute_rule_action(
+            ImsgRule(name=sensitive_rule_name, action="silent_drop"), {}, "424242"
+        )
+    assert allowed is False
+    assert sensitive_rule_name not in caplog.text
+    assert "confidential-contact-label" not in caplog.text
+    assert "+12025550100" not in caplog.text
+    assert "424242" not in caplog.text
+
+
+def test_invalid_mention_pattern_log_omits_configured_value(caplog):
+    sensitive_pattern = "confidential-contact-label["
+    with caplog.at_level("WARNING", logger="hermes_imsg_cli.adapter"):
+        assert ImsgAdapter._compile_mention_patterns([sensitive_pattern]) == []
+    assert sensitive_pattern not in caplog.text
+    assert "Invalid mention pattern" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_mark_read_failure_log_redacts_exception_and_omits_chat_rowid(
+    monkeypatch, tmp_path, caplog
+):
+    adapter = make_adapter(tmp_path)
+
+    async def fail(_args):
+        raise OSError("failed at /Users/exampleuser/chat.db for +12025550100")
+
+    monkeypatch.setattr(adapter, "_run_imsg", fail)
+    with caplog.at_level("DEBUG", logger="hermes_imsg_cli.adapter"):
+        assert await adapter.mark_read("424242") is False
+    assert "/Users/exampleuser" not in caplog.text
+    assert "+12025550100" not in caplog.text
+    assert "424242" not in caplog.text
+    assert "[REDACTED_PATH]" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_handle_watch_line_dispatches_valid_json(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, allow_all=True)
     seen = []

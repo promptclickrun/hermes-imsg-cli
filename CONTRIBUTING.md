@@ -64,13 +64,14 @@ scripts/validate.sh
 ```bash
 python -m pytest -q
 python -m compileall -q hermes_imsg_cli tests scripts
+python scripts/validate_site.py
 python scripts/privacy_scan.py
 git diff --check
 python -m pip wheel . --no-deps --no-build-isolation -w /tmp/hermes-imsg-wheel
 ```
 
-All of the above (except the wheel build) also run in CI
-(`.github/workflows/ci.yml`) on macOS, since some tests are platform-gated.
+All of the above run in CI (`.github/workflows/ci.yml`) on macOS, since some
+tests are platform-gated.
 
 ## Pull requests
 

@@ -21,7 +21,6 @@ import logging
 import os
 import re
 import shutil
-import stat
 import sys
 import tempfile
 import time
@@ -37,6 +36,7 @@ from gateway.platforms.base import (
 )
 
 from . import cli
+from .attachments import validate_outbound_attachment_path
 from .client import ImsgClient, ImsgCommandError
 from .config import (
     DEFAULT_DEBOUNCE,
@@ -190,26 +190,6 @@ def _attachment_path(att: Any) -> Optional[str]:
     )
     if value:
         return str(value)
-    return None
-
-
-def _validate_outbound_attachment_path(path: Any) -> Optional[str]:
-    """Return an error string if *path* is unsafe/invalid to send, else ``None``.
-
-    Rejects symlinks (even one pointing at a legitimate regular file, since a
-    symlink can be swapped out between validation and use — a classic TOCTOU
-    vector) and any non-regular file (directory, FIFO, socket, or device
-    node).  Only a genuine regular file may be handed to ``imsg send --file``.
-    """
-    text = str(path)
-    try:
-        st = os.lstat(text)
-    except OSError:
-        return f"imsg attachment not found: {text}"
-    if stat.S_ISLNK(st.st_mode):
-        return f"imsg attachment must be a regular file, not a symlink: {text}"
-    if not stat.S_ISREG(st.st_mode):
-        return f"imsg attachment must be a regular file: {text}"
     return None
 
 
@@ -422,14 +402,17 @@ class ImsgAdapter(BasePlatformAdapter):
         else:
             patterns = [raw]
         compiled: list[re.Pattern] = []
-        for pattern in patterns:
+        for pattern_index, pattern in enumerate(patterns):
             value = str(pattern).strip()
             if not value:
                 continue
             try:
                 compiled.append(re.compile(value, re.IGNORECASE))
-            except re.error as exc:
-                logger.warning("[imsg] Invalid mention pattern %r: %s", value, exc)
+            except re.error:
+                logger.warning(
+                    "[imsg] Invalid mention pattern at index %d; ignored",
+                    pattern_index,
+                )
         return compiled
 
     def _message_matches_mention(self, text: str) -> bool:
@@ -458,9 +441,11 @@ class ImsgAdapter(BasePlatformAdapter):
             data = json.loads(self.state_file.read_text())
             value = data.get("last_rowid")
             return int(value) if value is not None else None
-        except Exception:
+        except Exception as exc:
             logger.debug(
-                "[imsg] Failed to load state file %s", _redact(str(self.state_file)), exc_info=True
+                "[imsg] Failed to load state file %s: %s",
+                _redact(str(self.state_file)),
+                _redact(exc),
             )
             return None
 
@@ -498,9 +483,11 @@ class ImsgAdapter(BasePlatformAdapter):
                 except OSError:
                     pass
                 raise
-        except Exception:
+        except Exception as exc:
             logger.debug(
-                "[imsg] Failed to persist state file %s", _redact(str(self.state_file)), exc_info=True
+                "[imsg] Failed to persist state file %s: %s",
+                _redact(str(self.state_file)),
+                _redact(exc),
             )
 
     def _remember_event_ids(self, event: dict[str, Any]) -> None:
@@ -600,10 +587,10 @@ class ImsgAdapter(BasePlatformAdapter):
         if rule.action == "allow":
             return True
         if rule.action == "silent_drop":
-            logger.debug("[imsg] rule %r: silent_drop chat=%s", rule.name, chat_id)
+            logger.debug("[imsg] rule action: silent_drop")
             return False
         if rule.action == "deny":
-            logger.debug("[imsg] rule %r: deny chat=%s", rule.name, chat_id)
+            logger.debug("[imsg] rule action: deny")
             self._spawn_bg(
                 self.send(chat_id, "Sorry, you're not authorized to use this bot.")
             )
@@ -615,8 +602,8 @@ class ImsgAdapter(BasePlatformAdapter):
 
     async def _execute_fallback_action(self, event: dict[str, Any], chat_id: str) -> bool:
         logger.debug(
-            "[imsg] no rule matched chat=%s sender=%s fallback=%s",
-            chat_id, _redact(_event_sender(event)), self.fallback_action,
+            "[imsg] no rule matched; fallback=%s",
+            self.fallback_action,
         )
         if self.fallback_action == "allow":
             return True
@@ -660,13 +647,13 @@ class ImsgAdapter(BasePlatformAdapter):
         try:
             code, stdout, stderr = await self._run_imsg(cli.build_group_args(chat_id))
         except Exception as exc:
-            logger.debug("[imsg] _get_participants lookup failed for chat %s: %s", chat_id, exc)
+            logger.debug("[imsg] participant lookup failed: %s", _redact(exc))
             return set()
 
         if code != 0:
             logger.debug(
-                "[imsg] _get_participants non-zero exit for chat %s: %s",
-                chat_id, _redact(stderr or stdout),
+                "[imsg] participant lookup returned non-zero: %s",
+                _redact(stderr or stdout),
             )
             return set()
 
@@ -678,9 +665,7 @@ class ImsgAdapter(BasePlatformAdapter):
                     if isinstance(h, str) and h.strip():
                         participants.add(h.strip())
         except Exception as exc:
-            logger.debug(
-                "[imsg] _get_participants JSON parse failed for chat %s: %s", chat_id, exc
-            )
+            logger.debug("[imsg] participant lookup JSON parse failed: %s", _redact(exc))
             return set()
 
         self._participant_cache[chat_id] = (participants, time.time() + self.participant_cache_ttl)
@@ -754,7 +739,7 @@ class ImsgAdapter(BasePlatformAdapter):
                     _redact(stderr or stdout or f"imsg exited {code}"),
                 )
         except Exception as exc:
-            logger.warning("[imsg] `imsg launch` raised (non-fatal): %s", exc)
+            logger.warning("[imsg] `imsg launch` raised (non-fatal): %s", _redact(exc))
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_imsg_requirements(self.binary):
@@ -860,7 +845,7 @@ class ImsgAdapter(BasePlatformAdapter):
                 if self._running:
                     logger.warning(
                         "[imsg] watch loop error, reconnecting: %s%s",
-                        exc,
+                        _redact(exc),
                         self._stderr_tail_suffix(),
                     )
             finally:
@@ -907,8 +892,8 @@ class ImsgAdapter(BasePlatformAdapter):
                     self._watch_stderr_tail.append(_redact(text))
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.debug("[imsg] watch stderr drain ended", exc_info=True)
+        except Exception as exc:
+            logger.debug("[imsg] watch stderr drain ended: %s", _redact(exc))
 
     async def _process_watch_event(self, event: dict[str, Any]) -> None:
         rowid = _event_rowid(event)
@@ -1202,7 +1187,7 @@ class ImsgAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if media_files:
             for media_path, _is_voice in media_files:
-                attachment_error = _validate_outbound_attachment_path(media_path)
+                attachment_error = validate_outbound_attachment_path(media_path)
                 if attachment_error:
                     return SendResult(success=False, error=attachment_error)
         try:
@@ -1296,12 +1281,12 @@ class ImsgAdapter(BasePlatformAdapter):
         try:
             code, stdout, stderr = await self._run_imsg(cli.build_read_args(chat_id))
         except Exception as exc:
-            logger.debug("[imsg] mark_read raised for chat %s: %s", chat_id, exc)
+            logger.debug("[imsg] mark_read raised: %s", _redact(exc))
             return False
         if code != 0:
             logger.debug(
-                "[imsg] mark_read failed for chat %s: %s",
-                chat_id, _redact(stderr or stdout or f"imsg exited {code}"),
+                "[imsg] mark_read failed: %s",
+                _redact(stderr or stdout or f"imsg exited {code}"),
             )
             return False
         return True
@@ -1443,7 +1428,7 @@ async def _standalone_send(
     # pre-check just fails fast before spinning up an adapter.
     if media_files:
         for media_path, _is_voice in media_files:
-            attachment_error = _validate_outbound_attachment_path(media_path)
+            attachment_error = validate_outbound_attachment_path(media_path)
             if attachment_error:
                 return {"error": attachment_error}
     try:
@@ -1451,7 +1436,7 @@ async def _standalone_send(
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.debug("[imsg] standalone send raised", exc_info=True)
+        logger.debug("[imsg] standalone send raised: %s", _redact(exc))
         return {"error": f"imsg standalone send failed: {_redact(exc)}"}
 
 

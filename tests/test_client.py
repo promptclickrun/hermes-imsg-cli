@@ -57,6 +57,28 @@ async def test_client_send_returns_first_ndjson_object():
 
 
 @pytest.mark.asyncio
+async def test_client_send_requires_json_confirmation():
+    client = ImsgClient("imsg", runner=FakeRunner([(0, "", "")]))
+    with pytest.raises(ImsgCommandError, match="no JSON object"):
+        await client.send("42", "hello")
+
+
+@pytest.mark.asyncio
+async def test_client_send_rejects_symlink_file_before_runner(tmp_path):
+    real_file = tmp_path / "real.txt"
+    real_file.write_text("synthetic attachment")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real_file)
+    runner = FakeRunner([(0, json.dumps({"status": "sent", "guid": "G"}), "")])
+    client = ImsgClient("imsg", runner=runner)
+
+    with pytest.raises(ImsgCommandError, match="symlink"):
+        await client.send("42", file=str(link))
+
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
 async def test_client_nonzero_exit_is_redacted_and_structured():
     runner = FakeRunner([(7, "", "failed for +12025550100 alice@example.com")])
     client = ImsgClient("imsg", runner=runner)

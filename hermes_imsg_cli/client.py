@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, Optional
 
 from . import cli
+from .attachments import validate_outbound_attachment_path
 from .config import normalize_imsg_target
 from .rules import _redact
 
@@ -151,6 +152,10 @@ class ImsgClient:
         no_sms_fallback: bool = False,
     ) -> dict[str, Any]:
         normalized, is_phone = normalize_imsg_target(target)
+        if file:
+            attachment_error = validate_outbound_attachment_path(file)
+            if attachment_error:
+                raise ImsgCommandError("send", _redact(attachment_error))
         media = [(file, False)] if file else None
         return await self._one(cli.build_plain_send_args(
             normalized,
@@ -160,7 +165,7 @@ class ImsgClient:
             service=service,
             region=region,
             no_sms_fallback=no_sms_fallback,
-        ), required=False)
+        ))
 
     async def mark_read(self, chat_id: str) -> bool:
         await self._one(cli.build_read_args(chat_id), required=False)

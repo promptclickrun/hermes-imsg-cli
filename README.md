@@ -370,7 +370,8 @@ plugin's operating contract:
   `0600` permissions.
 - Raw `imsg watch` lines never enter logs. Errors and diagnostics are redacted
   for phone numbers, email addresses, home-directory paths, and GUID-like
-  identifiers before they reach a log line or agent-visible error.
+  identifiers before they reach a log line or agent-visible error. Plugin-owned
+  rule, participant, and action logs omit the known chat rowid.
 - A timed-out or cancelled subprocess receives a terminate signal first. The
   plugin bounds that wait and then force-kills a child that does not exit, so
   cleanup cannot hang indefinitely.
@@ -398,6 +399,7 @@ hermes_imsg_cli/          # plugin package and symlink target
   __init__.py             # lazy register(ctx) entry point
   plugin.yaml             # platform plugin manifest
   adapter.py              # adapter, registration, rules integration, and standalone send
+  attachments.py          # shared outbound regular-file validation
   rules.py                # Hermes-independent rules and redaction
   config.py               # configuration, requirements, state path, and target normalization
   cli.py                  # pure argument builders and subprocess runners
@@ -407,8 +409,11 @@ docs/                     # architecture, operations, parity, migration, and ver
 scripts/
   install-local.sh        # local symlink, enablement, and discovery probe
   validate.sh             # tests and import/registration probe
+  validate_site.py        # deterministic static-site and Pages workflow checks
   privacy_scan.py         # repository privacy and security scanner
 .github/workflows/ci.yml  # pinned-action macOS CI
+.github/workflows/pages.yml # pinned-action GitHub Pages deployment from site/
+site/                     # self-contained static project site and design authority
 LICENSE                   # MIT license
 SECURITY.md               # vulnerability reporting and required security properties
 CONTRIBUTING.md           # development setup and contribution guidance
@@ -439,6 +444,12 @@ Run the privacy and security scan separately when needed:
 python scripts/privacy_scan.py
 ```
 
+Validate the static release site and Pages workflow:
+
+```bash
+python scripts/validate_site.py
+```
+
 Tests never send a live iMessage or SMS. They also do not create polls, cast or
 remove votes, or run reactions against a real Messages account. Adapter and
 registration tests call `pytest.importorskip("gateway")`, so the pure rule,
@@ -448,8 +459,11 @@ checkout.
 The CI workflow in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) is
 configured for macOS with action versions pinned by commit SHA. It runs the
 tests, byte-compiles the Python sources, checks shell syntax, runs the privacy
-and security scan, checks pull-request diffs for whitespace errors, builds a
-wheel, and uploads the wheel artifact.
+and security scan, validates the static site, checks pull-request diffs for
+whitespace errors, builds a wheel, and uploads the wheel artifact. The separate
+[`pages.yml`](.github/workflows/pages.yml) workflow validates and deploys
+`site/` from `main`; repository Pages enablement remains an owner-controlled
+setting.
 
 ## Further documentation
 

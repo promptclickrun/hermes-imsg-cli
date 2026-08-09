@@ -129,15 +129,16 @@ def parse_imsg_rules(raw: Any) -> list[ImsgRule]:
         action = str(item.get("action", "silent_drop")).strip().lower()
         if action not in _VALID_ACTIONS:
             logger.warning(
-                "[imsg] rules[%d] has unknown action %r, defaulting to silent_drop",
-                i, action,
+                "[imsg] rules[%d] has unknown action, defaulting to silent_drop",
+                i,
             )
             action = "silent_drop"
 
         context = str(item.get("context", "any")).strip().lower()
         if context not in _VALID_CONTEXTS:
             logger.warning(
-                "[imsg] rules[%d] has unknown context %r, defaulting to any", i, context
+                "[imsg] rules[%d] has unknown context, defaulting to any",
+                i,
             )
             context = "any"
 

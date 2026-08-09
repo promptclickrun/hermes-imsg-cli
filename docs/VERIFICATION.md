@@ -9,6 +9,64 @@ This report supersedes the prior (2026-07-13) verification for the security/
 privacy remediation described below. It does not re-audit upstream `imsg`
 parity, which is unchanged; see `PARITY.md`.
 
+## 2026-08-09 public-release addendum
+
+**Branch:** `main`
+**Scope:** current-tree release review, fail-closed fixes, static project site,
+and GitHub Pages workflow readiness. Upstream parity was not re-audited.
+
+The release review found and corrected six concrete implementation issues:
+
+- runtime `__version__` was `1.0.0` while `pyproject.toml` and `plugin.yaml`
+  declared `1.2.0`;
+- a successful `imsg status --json` process with malformed or non-object JSON
+  was treated as available instead of failing closed;
+- the direct `ImsgClient.send()` API accepted empty stdout after exit 0 instead
+  of requiring a JSON confirmation object;
+- the direct client file-send path did not apply the regular-file and no-symlink
+  validation already used by adapter and standalone sends;
+- outbound attachment validation errors included the raw local file path when
+  surfaced through adapter or standalone send results;
+- plugin-owned rule, participant, read, launch, watch, state, and standalone
+  diagnostics could include known chat rowids or unredacted exception/config
+  values.
+
+The review also corrected `ARCHITECTURE.md`, which described every native poll
+mutation as a short-lived CLI command even though creation uses one bounded
+`imsg rpc` request and vote/unvote use CLI commands. No other plugin behavior
+was changed.
+
+A self-contained static project site now lives under `site/`. Its deterministic
+validator checks semantic structure, local-only runtime assets, content and
+documentation links, accessibility primitives, the responsive contracts at
+1440x900, 768x1024, 390x844, and 320x700, the interaction implementation,
+visual constraints, and the Pages workflow. Existing CI runs this validator.
+The separate Pages workflow validates and uploads only `site/` from `main`,
+supports manual dispatch, uses full-SHA official action pins, keeps Pages read
+access on the build job, keeps Pages write and OIDC token access on the deploy
+job, and sets `enablement: false` so repository settings remain owner-controlled.
+
+Fresh final-tree evidence:
+
+```text
+scripts/validate.sh: 231 passed, 1 warning; registration and requirements probes PASS
+scripts/validate_site.py: PASS at 1440x900, 768x1024, 390x844, and 320x700
+scripts/privacy_scan.py: scanned 39 files; no findings; PASS
+shell syntax: PASS
+compileall: PASS
+JavaScript syntax: PASS
+workflow YAML parse: PASS
+wheel: hermes_imsg_cli-1.2.0-py3-none-any.whl built and metadata inspected
+git diff --check: PASS
+```
+
+The warning is the transitive Hermes environment's Python 3.13 `audioop`
+deprecation, not a plugin failure. The read-only requirements probe invoked
+`imsg status --json`; no message, reaction, read receipt, typing event, poll,
+SIP, TCC, launch, restart, deployment, or repository-setting mutation was
+performed. GitHub-hosted CI and Pages deployment remain unexecuted because this
+task did not commit, push, deploy, or change repository settings.
+
 ## What changed in this pass
 
 - **Reply routing fix:** `send()` no longer attempts a threaded `send-rich`

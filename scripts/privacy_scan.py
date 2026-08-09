@@ -48,9 +48,10 @@ _RESERVED_PHONE_RE = re.compile(r"^\+?1?\d{3}5550(1\d{2})$")
 
 # Matches a plausible phone-shaped digit run: optional country code, area
 # code, exchange, subscriber number (10-11 consecutive digits), optionally
-# with a leading '+'.  Deliberately does not match shorter/longer digit runs
-# (SHAs, timestamps, version strings) or ones containing hex letters.
+# with a leading '+'. Full 40-character Git commit SHAs are excluded below so
+# an internal numeric run in an immutable Actions pin is not misclassified.
 _PHONE_CANDIDATE_RE = re.compile(r"(?<![\d.])\+?1?\d{10}(?![\d.])")
+_GIT_COMMIT_SHA_RE = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{40}(?![0-9A-Fa-f])")
 
 # ---------------------------------------------------------------------------
 # Home-directory paths.  Only flag ones that look like a real per-user
@@ -145,7 +146,10 @@ def scan_file(path: Path) -> list[str]:
     findings: list[str] = []
 
     for line_no, line in enumerate(text.splitlines(), start=1):
+        commit_sha_spans = [match.span() for match in _GIT_COMMIT_SHA_RE.finditer(line)]
         for match in _PHONE_CANDIDATE_RE.finditer(line):
+            if any(start <= match.start() and match.end() <= end for start, end in commit_sha_spans):
+                continue
             candidate = match.group(0)
             if not _RESERVED_PHONE_RE.match(candidate):
                 findings.append(
