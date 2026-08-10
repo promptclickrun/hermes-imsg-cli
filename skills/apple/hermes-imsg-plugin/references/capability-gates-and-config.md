@@ -96,7 +96,7 @@ platforms:
       binary: /opt/homebrew/bin/imsg
       auto_launch: false
       send_read_receipts: false
-      reaction_notifications: own
+      reaction_notifications: off
       poll_vote_events:
         dm: false
         group: false
@@ -137,7 +137,7 @@ Environment values override YAML.
 | `identity_aliases` | Readable names for policy-matched handles. |
 | `require_mention` | Group mention gate. |
 | `mention_patterns` | Mention regular expressions. |
-| `reaction_notifications` | `own`, `all`, or `off`. |
+| `reaction_notifications` | `off` by default. `own` and `all` opt in to Tapback-triggered agent turns. |
 | `poll_vote_events` | DM/group/chat/unvote delivery policy. |
 | `auto_launch` | Re-arm an already configured bridge on connect. |
 | `send_read_receipts` | Best-effort accepted-chat read marking. |

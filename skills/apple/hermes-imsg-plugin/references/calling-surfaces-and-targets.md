@@ -22,17 +22,21 @@ Load this reference before choosing how to call a plugin capability. Source basi
 - If a successfully decoded status object positively lacks that complete gate, it becomes legacy `imsg send --chat-id <rowid>` before any mutation attempt.
 - If discovery fails, or if the RPC attempt starts and then errors, times out, is cancelled, or returns an ambiguous result, stop. Do not switch transports or resend.
 - The plugin never substitutes a participant, chat GUID, or chat identifier for that rowid.
-- A native threaded reply is used only when `reply_to` and its chat GUID were learned from the same trusted rowid.
-- If the threaded binding is unavailable, the adapter keeps the plain rowid reply instead of redirecting.
+- Framework `reply_to` is correlation metadata only. It never changes an ordinary adapter response into a native thread.
+- A native thread requires the explicit `imsg_action` `reply` action and a message ID that resolves inside the selected conversation.
 
 Adapter shape:
 
 ```python
 await adapter.send("42", "Reply text")
-await adapter.send("42", "Threaded text", reply_to="MESSAGE-GUID")
+await adapter.send("42", "Still plain", reply_to="CORRELATION-ID")
 ```
 
-The first call follows the capability-selected text route. The second call becomes a native thread only after the trusted same-rowid check.
+Both calls follow the capability-selected plain-text route to rowid `42`. To create a native Apple Messages thread, invoke the action tool explicitly:
+
+```json
+{"action":"reply","chat_id":"42","message_id":"MESSAGE-GUID","text":"Threaded text"}
+```
 
 ## Proactive Hermes delivery
 

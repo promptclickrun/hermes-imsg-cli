@@ -14,9 +14,9 @@ inbound event and exposes private bridge actions only after a capability probe.
 - Address a conversation by `chat_id:`, `chat_guid:`, `chat_identifier:`, an
   `imessage:` or `sms:` handle, a phone number, or an Apple ID email address.
 - Keep normal conversation replies on the captured positive Messages rowid.
-- Send an exact same-chat threaded reply when Hermes supplies a trusted message
-  reference from the current conversation.
-- Attach one file to a trusted threaded reply.
+- Send an exact same-chat threaded reply only through the explicit
+  `imsg_action` `reply` action.
+- Attach one file to an explicit native threaded reply.
 - Split long text at the Hermes platform limit of 4,000 characters.
 - Convert authored bold, italic, underline, and strikethrough markup to native
   attributed-text ranges. Offsets use UTF-16 code units. Inline code, fenced
@@ -84,18 +84,21 @@ and unauthenticated programmatic access do not grant group mutation authority.
 
 - Preserve the complete decoded `imsg` object in `raw_message`.
 - Expose attachment metadata and resolvable converted or original paths.
-- Preserve reply GUID, thread originator, reply text, reply sender, chat GUID,
-  group metadata, participant metadata, and poll objects when present.
-- Subscribe to structured tapback events with `watch --reactions`.
+- Preserve native reply context only when a non-empty `thread_originator_guid`
+  or `threadOriginatorGuid` is present. Ignore `reply_to_guid` alone.
+- Subscribe to structured tapback events with `watch --reactions` only in the
+  explicit `own` or `all` modes.
 - Deliver reaction notifications as readable system-style events without
   treating them as ordinary message text.
-- Support reaction notification modes `own`, `all`, and `off`; `own` is the
-  default and uses sent-message evidence from memory or same-chat history.
+- Support reaction notification modes `own`, `all`, and `off`; `off` is the
+  default and drops reactions before agent processing. `own` uses sent-message
+  evidence from memory or same-chat history.
 - Suppress outbound echoes and every event reported as `is_from_me`.
 - Optionally convert supported inbound attachments before model ingestion.
 
-All inbound variants pass through the same sender, chat, participant, mention,
-and fallback policy before dispatch to Hermes.
+Accepted message, poll, and opt-in reaction variants pass through the sender,
+chat, participant, mention, and fallback policy before dispatch to Hermes.
+Disabled reactions return before that policy and never initiate a turn.
 
 ## Access policy and routing
 

@@ -35,9 +35,20 @@ scope) as the top priority.
 Any change that weakens one of these is a regression, not a feature:
 
 - **Reply routing never guesses.** Inbound replies always route to the exact
-  Messages chat rowid captured from the inbound event via plain
-  `imsg send --chat-id`. No GUID resolution, no participant matching, no
-  caller/metadata-supplied override can redirect a reply to a different chat.
+  Messages chat rowid captured from the inbound event through the
+  capability-selected plain-send path. No GUID resolution, participant
+  matching, or caller-supplied metadata can redirect a reply. Framework
+  `reply_to` correlation never requests an Apple Messages thread; only the
+  explicit native `reply` action can do so after a same-chat lookup.
+- **Quoted context requires a native thread origin.** The adapter exposes reply
+  context only when `thread_originator_guid` or `threadOriginatorGuid` is a
+  non-empty string. `reply_to_guid` by itself is not trusted because it can
+  identify an unrelated recent message.
+- **Tapbacks are silent by default.** With reaction notifications `off`, the
+  watch subscription omits reactions and any reaction that still arrives is
+  dropped after cursor persistence but before authorization, history lookup,
+  read receipts, conversion, or agent dispatch. Modes `own` and `all` are
+  explicit opt-ins that permit Tapbacks to start agent turns.
 - **Fail closed, not open.** Malformed/empty command output, invalid targets,
   unresolved chat rowids, and unsafe attachments are treated as failures, not
   successes.

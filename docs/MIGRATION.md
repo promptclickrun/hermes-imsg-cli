@@ -6,6 +6,23 @@ The plugin uses the locally installed `imsg` executable and keeps platform
 policy in Hermes. Upgrading the plugin does not modify Messages.app, TCC, SIP,
 the `imsg` package, or the Hermes core checkout.
 
+## Version 2.0.1 safety changes
+
+- Ordinary text, document, image, video, and voice responses ignore Hermes
+  `reply_to` correlation and stay unthreaded on the exact source rowid. Use the
+  explicit `imsg_action` `reply` action when a native Apple Messages thread is
+  intended.
+- Inbound quote context now requires `thread_originator_guid` or
+  `threadOriginatorGuid`. A standalone `reply_to_guid` no longer produces a
+  synthetic “Replying to” context block.
+- Reaction notifications now default to `off`. The default watch command omits
+  `--reactions`, and any reaction still received is discarded before agent
+  processing.
+
+An existing explicit `reaction_notifications: own` or `all` setting remains an
+opt-in after upgrade. Change it to `off` unless Tapbacks are intentionally
+allowed to initiate agent turns.
+
 ## Preserved behavior
 
 - platform name `imsg` and plugin name `imsg-platform`
@@ -21,7 +38,8 @@ the `imsg` package, or the Hermes core checkout.
 ## Added behavior
 
 - native styled text with UTF-16 formatting ranges
-- trusted same-chat threaded replies and reply attachments
+- explicit same-chat threaded replies and reply attachments through
+  `imsg_action`
 - structured inbound reaction delivery with `own`, `all`, and `off` modes
 - exact-message tapback add and remove, including unnamed safe removal
 - message edit and unsend with bot-authorship checks
@@ -48,7 +66,12 @@ private bridge is not configured.
 7. Raw watch lines and private payloads are excluded from logs.
 8. The recovery cursor is atomically persisted with owner-only permissions.
 9. Native action references are verified inside the selected conversation.
-10. Caller metadata cannot redirect ordinary or threaded replies.
+10. Caller metadata cannot redirect ordinary replies or implicitly request a
+    native thread.
+11. Native reply context is emitted only from the thread-originator field, not
+    from an unreliable recent-message reply field.
+12. Inbound reactions default to silent and are dropped before the agent
+    pipeline when disabled.
 
 ## From direct scripts
 

@@ -65,13 +65,16 @@ imsg status --json
 The adapter supervises one watch process equivalent to:
 
 ```bash
-imsg watch --json --attachments --convert-attachments --reactions --debounce 500ms
+imsg watch --json --attachments --convert-attachments --debounce 500ms
 ```
+
+The adapter adds `--reactions` only when `reaction_notifications` is explicitly
+set to `own` or `all`.
 
 Optional filters include:
 
 ```bash
-imsg watch --chat-id 42 --since-rowid 1000 --attachments --reactions --json
+imsg watch --chat-id 42 --since-rowid 1000 --attachments --json
 imsg watch --participants '+12025550101,+12025550102' --start '...' --end '...' --json
 ```
 
@@ -94,7 +97,8 @@ Accepted events can preserve:
 - sender and participant metadata,
 - group metadata,
 - attachments and resolved converted/original paths,
-- reply GUID, thread originator, reply text, and reply sender,
+- reply text and sender only when a non-empty native thread originator is
+  present; `reply_to_guid` alone is ignored,
 - structured reaction context,
 - complete poll objects and vote updates.
 
@@ -124,11 +128,17 @@ Participant validation:
 
 Reaction notification modes:
 
-- `own`: deliver reactions to bot-authored messages only; default.
+- `off`: suppress reaction notifications; default.
+- `own`: deliver reactions to bot-authored messages only.
 - `all`: deliver every authorized inbound reaction.
-- `off`: suppress reaction notifications.
 
-`own` checks a bounded cache of confirmed sent message IDs, then same-chat history if needed. Admission policy runs before ownership lookup. Reaction events become readable system-style events rather than ordinary user text.
+In `off` mode the watch command omits `--reactions`, and a reaction that still
+arrives is dropped after cursor persistence and before authorization, history
+lookup, read receipts, or agent dispatch. `own` checks a bounded cache of
+confirmed sent message IDs, then same-chat history if needed. Admission policy
+runs before ownership lookup. Both `own` and `all` are prompt-bearing opt-ins:
+accepted reaction events become readable system-style Hermes turns rather than
+ordinary user text.
 
 ## Poll vote events
 

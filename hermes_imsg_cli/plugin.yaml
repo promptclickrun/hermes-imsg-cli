@@ -1,7 +1,7 @@
 name: imsg-platform
 label: iMessage
 kind: platform
-version: 2.0.0
+version: 2.0.1
 description: >
   Native iMessage/SMS gateway adapter for Hermes Agent, backed by the local
   `imsg` CLI on macOS.  Registers the `imsg` platform via the stock plugin API
@@ -63,8 +63,8 @@ optional_env:
     prompt: "Send read receipts? (true/false)"
     password: false
   - name: IMSG_REACTION_NOTIFICATIONS
-    description: "Inbound reaction notifications: own, all, or off (default: own)."
-    prompt: "Reaction notifications (own/all/off)"
+    description: "Inbound reaction notifications: off, own, or all (default: off; opt-in modes can start agent turns)."
+    prompt: "Reaction notifications (off/own/all)"
     password: false
   - name: IMSG_FALLBACK_ACTION
     description: "Action when no rule matches: silent_drop | deny | prompt | allow (default: silent_drop)."

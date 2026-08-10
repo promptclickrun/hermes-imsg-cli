@@ -53,9 +53,9 @@ automation, the optional private bridge, and native mutation mechanics.
 
 1. **Exact ordinary reply routing.** `MessageEvent.source.chat_id` is the
    positive rowid from the inbound object. A normal reply uses that same rowid.
-2. **Trusted threading only.** A native threaded reply is allowed only when the
-   requested message GUID and its chat GUID were recorded for that same rowid
-   from trusted inbound data. Caller metadata never supplies a destination.
+2. **Explicit threading only.** Framework `reply_to` is correlation metadata,
+   never a native-thread request. Only the `imsg_action` `reply` action may
+   create a thread, after resolving its message GUID in the selected chat.
 3. **Exact native targets.** An action accepts one of `chat_id`, `chat_guid`,
    `chat_identifier`, or `to`. Conflicts fail before the client is created.
 4. **Same-chat references.** Message and poll IDs are looked up in the target
@@ -86,39 +86,42 @@ automation, the optional private bridge, and native mutation mechanics.
 1. `connect()` checks the executable and may re-arm a previously configured
    private bridge when `auto_launch` is enabled.
 2. `_watch_loop()` starts one `imsg watch --json --attachments
-   --convert-attachments --reactions` process with the persisted
-   `--since-rowid` cursor.
+   --convert-attachments` process with the persisted `--since-rowid` cursor.
+   It adds `--reactions` only for the explicit `own` or `all` modes.
 3. Stdout is consumed one line at a time. Stderr is drained concurrently into
    a bounded redacted tail so neither pipe can block the process.
 4. A malformed line is dropped with only its size logged. Its content is not
    copied to a log message.
 5. The cursor advances before policy handling so unauthorized or malformed
    events cannot replay forever.
-6. Self and unresolved events are dropped. Sender, chat, participant, mention,
-   and fallback policy is evaluated.
-7. Accepted reactions are filtered by `own`, `all`, or `off`. Accepted poll
-   events are filtered by their DM, group, chat, and unvote settings.
+6. In the default `off` mode, reactions are dropped immediately after cursor
+   persistence, before authorization, history lookup, read receipts, or agent
+   dispatch.
+7. Self and unresolved events are dropped. Sender, chat, participant, mention,
+   and fallback policy is evaluated. Reactions in opt-in `own` or `all` mode
+   and poll events then receive their configured filters.
 8. Accepted objects become Hermes `MessageEvent` values with the complete
    decoded object retained in `raw_message`.
-9. Hermes replies by exact rowid unless the trusted same-chat thread binding is
-   satisfied.
+9. Hermes replies by exact rowid. A native thread requires a separate explicit
+   `imsg_action` `reply` invocation.
 
 ## Reply routing
 
-The rowid remains the routing authority. The adapter caches the latest trusted
-message GUID and chat GUID by rowid when it accepts inbound data. A
-`reply_to` request is native-threaded only when all three values match that
-cache entry:
+The rowid remains the routing authority for every ordinary platform response.
+Hermes can pass `reply_to` for response correlation, including a direct previous
+message ID, but the adapter intentionally ignores it when selecting the send
+operation. Text and media responses therefore stay plain and unthreaded.
 
-```text
-requested rowid == cached rowid
-requested message GUID == cached message GUID
-cached rowid has a trusted chat GUID
-```
+Native threading is an explicit mutation. The `imsg_action` `reply` handler
+accepts one exact conversation target and a message GUID, looks up that message
+inside the selected chat, and only then calls the bridge reply method. This
+separates framework response bookkeeping from user-visible Apple Messages
+threading.
 
-When any condition fails, the reply remains a plain `send --chat-id` call. The
-cache cannot redirect a rowid because the rowid is the lookup key, and request
-metadata is not consulted for routing.
+Inbound reply context follows the same explicit-evidence rule. A normal message
+gets Hermes reply context only from a non-empty `thread_originator_guid` or
+`threadOriginatorGuid`. `reply_to_guid` alone is ignored because it is not a
+reliable indication that the user used the native quote-reply gesture.
 
 ## Native action flow
 
@@ -174,7 +177,7 @@ replaying an event whose later agent invocation failed.
 - Validate every outbound path as a regular file.
 - Use one file per command. Multi-file standalone sends execute sequentially
   and report a deterministic partial failure.
-- A trusted rich reply accepts at most one attachment.
+- An explicit native `reply` action accepts at most one attachment.
 
 ## Plain-send transport decisions
 
@@ -198,9 +201,14 @@ addition, removal, and part indexes. If removal omits a reaction name, the
 handler inspects the message's current `reactions` array and requires exactly
 one bot-authored tapback to remove.
 
-Inbound reaction mode defaults to `own`. The adapter first checks a bounded
-cache of sent message GUIDs, then performs a same-chat history lookup when
-needed. Authorization runs before the ownership lookup.
+Inbound reaction mode defaults to `off`. The default watch command omits
+`--reactions`, and defense-in-depth drops any reaction that still arrives after
+advancing the recovery cursor but before authorization, ownership/history
+lookup, read receipts, conversion, or agent dispatch. Modes `own` and `all`
+remain explicit opt-ins because accepted reaction events become agent turns.
+In `own` mode, the adapter checks a bounded cache of sent message GUIDs and then
+performs a same-chat history lookup when needed; authorization runs before that
+lookup.
 
 ## Poll decisions
 
@@ -229,7 +237,7 @@ unauthenticated API and webhook contexts.
 | 2026-07-13 | Parse command output as NDJSON while accepting one compatibility array. | The command contract is one JSON object per line and its schema is additive. |
 | 2026-07-15 | Require structured send confirmation and validate outbound files. | Process exit alone cannot prove delivery, and special files are unsafe send inputs. |
 | 2026-07-15 | Persist the recovery cursor atomically with owner-only permissions. | A partial or broadly readable state file weakens recovery and local privacy. |
-| 2026-08-09 | Permit native threading only from a trusted same-rowid binding. | This restores threaded replies without allowing metadata or stale cross-chat state to redirect delivery. |
+| 2026-08-09 | Permit native threading only from a trusted same-rowid binding. Superseded on 2026-08-10. | This restored threaded replies without allowing metadata or stale cross-chat state to redirect delivery. |
 | 2026-08-09 | Centralize all native mutations in `imsg_action` and route poll compatibility through it. | One resolver and capability boundary prevents divergent safety behavior. |
 | 2026-08-09 | Convert supported markup to native UTF-16 ranges. | Messages can render authored emphasis without exposing markup tokens. |
 | 2026-08-09 | Gate each native action from the live status object. | Private bridge availability is granular and may change across host versions. |
@@ -237,3 +245,5 @@ unauthenticated API and webhook contexts.
 | 2026-08-09 | Cancel POSIX subprocesses by process group. | Terminating only `imsg` can leave helper grandchildren such as `osascript` running. |
 | 2026-08-09 | Require authenticated owners for group mutations from messaging surfaces. | Conversation access must not imply authority to change group identity or membership. |
 | 2026-08-09 | Keep exact identifiers visible to the native action tools. | Hashing rowids or GUIDs would break same-chat validation and native targeting. |
+| 2026-08-10 | Treat framework reply metadata as correlation only and require `imsg_action` for native threads. | Automatic threading bound every response to the immediately previous message and made framework bookkeeping user-visible. |
+| 2026-08-10 | Default inbound reactions to `off` and drop them before the agent pipeline. | Tapbacks are social acknowledgements by default and must not become quiet prompt-bearing turns, especially in groups. |

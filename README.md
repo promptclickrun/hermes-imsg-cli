@@ -31,11 +31,12 @@ after an RPC attempt. Explicit SMS and attachment sends stay on `imsg send`.
 Explicit proactive sends may use a rowid, chat GUID, chat identifier, phone
 number, or email address.
 
-When Hermes supplies `reply_to`, the plugin uses a native threaded reply only
-if that message GUID and the corresponding chat GUID were learned from the
-same trusted inbound rowid. Otherwise it keeps the plain rowid route. Metadata
-never redirects a reply. See [Architecture and decision
-log](docs/ARCHITECTURE.md) for the full reasoning.
+Hermes may supply `reply_to` as framework correlation metadata. The platform
+adapter never interprets that field as a request for an Apple Messages thread:
+ordinary text and media responses stay on the plain rowid route. A native
+thread is created only through the explicit `imsg_action` `reply` action, which
+resolves the referenced message inside the selected conversation. See
+[Architecture and decision log](docs/ARCHITECTURE.md) for the full reasoning.
 
 ## Requirements
 
@@ -108,7 +109,7 @@ platforms:
       group_action_admins: ["+12025550101"]      # group mutation owners
       allowed_chats: ["16", "8"]                 # Messages chat rowids
       require_mention: false
-      reaction_notifications: own                 # own | all | off
+      reaction_notifications: off                 # safe default; own/all opt in
       poll_vote_events:
         dm: false
         group: false
@@ -158,7 +159,7 @@ IMCore behavior. On a normal SIP-enabled Mac, use the public-only settings in
 | `IMSG_MENTION_PATTERNS` | Group mention patterns as a JSON array or comma- or newline-separated regular expressions. |
 | `IMSG_AUTO_LAUNCH` | Re-arm the Messages.app bridge on connect. The default is `true`. |
 | `IMSG_SEND_READ_RECEIPTS` | Send read receipts for inbound messages. The default is `true`. |
-| `IMSG_REACTION_NOTIFICATIONS` | Deliver inbound tapbacks for `own`, `all`, or `off`. The default is `own`. |
+| `IMSG_REACTION_NOTIFICATIONS` | Deliver inbound tapbacks for `own`, `all`, or `off`. The default is `off`; `own` and `all` intentionally turn accepted Tapbacks into agent turns. |
 | `IMSG_FALLBACK_ACTION` | Action to take when no rule matches. |
 | `IMSG_PARTICIPANT_VALIDATION` | Use `fast` event data or a `strict` live CLI lookup. |
 | `IMSG_PARTICIPANT_CACHE_TTL` | Number of seconds to cache strict participant lookups. The default is `300`. |
@@ -360,8 +361,17 @@ attachments, logs, or local state. The following properties are part of the
 plugin's operating contract:
 
 - Ordinary replies use the trusted positive rowid. A threaded reply uses a
-  message GUID only when the plugin already bound it and its chat GUID to that
-  same rowid from a trusted inbound event.
+  message GUID only through the explicit `imsg_action` `reply` action after a
+  same-chat lookup. Framework `reply_to` metadata never requests native
+  threading.
+- Inbound quote context is exposed only when the event contains a non-empty
+  `thread_originator_guid` (or its camel-case alias). The unreliable
+  `reply_to_guid` field alone is ignored.
+- Tapbacks are silent by default. In `off` mode the watch process does not
+  request reaction events, and any reaction that still arrives is dropped
+  immediately after cursor persistence, before authorization, history lookup,
+  read receipts, or agent dispatch. `own` and `all` are explicit prompt-bearing
+  opt-ins.
 - Native message and poll references are verified in the selected conversation
   before mutation. Edit and unsend also require a bot-authored history record.
 - Group mutations outside interactive local Hermes surfaces require an

@@ -73,7 +73,7 @@
             <p class="section-label">Routing demonstration</p>
             <h2 id="routing-title">The source chat determines the reply.</h2>
           </div>
-          <p>Select an inbound event. The ordinary command uses its captured positive rowid. A native thread is allowed only when its message and chat GUIDs are already bound to that same rowid.</p>
+          <p>Select an inbound event. The ordinary response uses its captured positive rowid and remains unthreaded. A native thread requires the explicit <code>imsg_action</code> reply action and a same-chat message lookup.</p>
         </div>
 
         <div class="routing-interface">
@@ -244,7 +244,7 @@ scripts/install-local.sh</code></pre>
     extra:
       auto_launch: false
       send_read_receipts: false
-      reaction_notifications: own
+      reaction_notifications: off
       allowed_handles: ["+12025550101"]
       group_allowed_handles: ["+12025550101"]
       group_action_admins: ["+12025550101"]
@@ -271,7 +271,11 @@ scripts/install-local.sh</code></pre>
       <dl class="security-list">
         <div>
           <dt>Exact reply destination</dt>
-          <dd>Ordinary replies use the trusted rowid. Native threads require a message and chat GUID already bound to that same rowid.</dd>
+          <dd>Ordinary replies use the trusted rowid and ignore framework reply correlation. Native threads require the explicit reply action and a same-chat message lookup.</dd>
+        </div>
+        <div>
+          <dt>Silent Tapbacks</dt>
+          <dd>Reaction events are not subscribed to by default and are dropped before agent processing when disabled. Opt-in modes can initiate agent turns.</dd>
         </div>
         <div>
           <dt>Same-chat mutations</dt>

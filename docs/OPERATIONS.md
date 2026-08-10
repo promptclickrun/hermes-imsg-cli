@@ -85,7 +85,7 @@ platforms:
       binary: /opt/homebrew/bin/imsg
       auto_launch: false
       send_read_receipts: false
-      reaction_notifications: own
+      reaction_notifications: off
       poll_vote_events:
         dm: false
         group: false
@@ -175,7 +175,7 @@ precedence over YAML.
 | `IMSG_REQUIRE_MENTION` / `IMSG_MENTION_PATTERNS` | Group mention gating and patterns. |
 | `IMSG_AUTO_LAUNCH` | Re-arm an already configured private bridge on connect. |
 | `IMSG_SEND_READ_RECEIPTS` | Best-effort private bridge read marking. |
-| `IMSG_REACTION_NOTIFICATIONS` | `own`, `all`, or `off`; default `own`. |
+| `IMSG_REACTION_NOTIFICATIONS` | `own`, `all`, or `off`; default `off`. Opt-in modes can start agent turns. |
 | `IMSG_FALLBACK_ACTION` | `silent_drop`, `deny`, `prompt`, or `allow`. |
 | `IMSG_PARTICIPANT_VALIDATION` / `IMSG_PARTICIPANT_CACHE_TTL` | `fast` or `strict`, plus cache seconds. |
 | `IMSG_DEBOUNCE` | Watch debounce such as `500ms`. |
@@ -188,15 +188,21 @@ precedence over YAML.
 
 ## Reaction and poll event policy
 
-The watch stream subscribes to structured tapback events. Configure delivery
-with:
+The default `off` mode omits `--reactions` from the watch command. If a reaction
+still arrives, the adapter advances the recovery cursor and drops it before
+authorization, ownership/history lookup, read receipts, conversion, or agent
+dispatch. Configure an explicit opt-in only when Tapbacks should initiate agent
+turns:
 
 - `own`: deliver reactions to bot-authored messages only
 - `all`: deliver every authorized inbound reaction
-- `off`: suppress reaction notifications
+- `off`: suppress reaction notifications; this is the default
 
 `own` first checks a bounded cache of confirmed sent message IDs and then uses
 a same-chat history lookup if needed. Admission policy runs before that lookup.
+Both `own` and `all` convert accepted Tapbacks into prompt-bearing Hermes
+events, so group deployments should leave the mode `off` unless that behavior
+is deliberately required.
 
 Poll vote events are disabled by default. Enable direct-message and group
 scopes independently:
@@ -251,7 +257,10 @@ imsg history --chat-id 42 --limit 20 --attachments --json | jq -s
 # Search local history.
 imsg search --query 'pizza' --match contains --limit 20 --json | jq -s
 
-# Inspect the watch contract in a disposable diagnostic session.
+# Inspect the default watch contract in a disposable diagnostic session.
+imsg watch --chat-id 42 --since-rowid 1000 --attachments --json
+
+# Explicit reaction diagnostic only; this is not the safe platform default.
 imsg watch --chat-id 42 --since-rowid 1000 --attachments --reactions --json
 ```
 
@@ -341,11 +350,12 @@ there. Update or re-arm the bridge only through the operator procedure for the
 installed `imsg` release. The plugin does not fake a private action with an
 ordinary text message.
 
-### A threaded reply becomes a normal reply
+### A normal response is not threaded
 
-The supplied message ID was not the trusted current message for that rowid, or
-the adapter had no trusted chat GUID binding. This is the safe fallback. Use
-`imsg_action` with an exact target when a proactive native reply is intended.
+This is intentional. Hermes `reply_to` is response correlation and ordinary
+platform text or media never turns it into an Apple Messages thread. Use
+`imsg_action` with action `reply`, one exact conversation target, and the exact
+same-chat message ID when a native threaded reply is intended.
 
 ### A group mutation is denied
 
