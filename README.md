@@ -109,7 +109,7 @@ platforms:
       group_action_admins: ["+12025550101"]      # group mutation owners
       allowed_chats: ["16", "8"]                 # Messages chat rowids
       require_mention: false
-      reaction_notifications: off                 # safe default; own/all opt in
+      reaction_notifications: "off"               # safe default; own/all opt in
       poll_vote_events:
         dm: false
         group: false

@@ -96,7 +96,7 @@ platforms:
       binary: /opt/homebrew/bin/imsg
       auto_launch: false
       send_read_receipts: false
-      reaction_notifications: off
+      reaction_notifications: "off"
       poll_vote_events:
         dm: false
         group: false
