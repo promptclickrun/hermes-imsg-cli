@@ -1,23 +1,27 @@
 # Verification report
 
-Date: 2026-08-09
+Date: 2026-08-10
 
-Scope: `imsg` platform release 2.0.0 in the isolated
-`imsg-full-parity` worktree
+Scope: `imsg` platform release 2.0.1 in the isolated
+`imsg-reply-reaction-safety` worktree
 
-Mutation boundary: no live verification mutation was authorized
+Mutation boundary: no live Messages mutation was authorized or performed
 
 ## Outcome
 
-The complete repository suite, plugin registration probe, site validator,
-privacy scan, byte compilation, isolated package build, wheel metadata check,
-read-only host capability probe, and diff whitespace check completed
-successfully.
+The complete repository suite, plugin registration probe, focused reply and
+reaction regression suite, site validator, privacy scan, byte compilation,
+isolated package build, package metadata inspection, read-only host capability
+probe, and diff whitespace check completed successfully.
 
-The current host advertises the private methods and selectors needed for every
-implemented native action except edit. It advertises `message.edit`, but both
-supported edit selectors are false. The client therefore rejects edit before
-running its mutation command on this host.
+The release fixes three user-visible behaviors:
+
+- ordinary Hermes text and media responses remain unthreaded even when the
+  framework supplies `reply_to` correlation;
+- inbound reply context is emitted only for a real `thread_originator_guid`,
+  not for the unreliable `reply_to_guid` field alone;
+- Tapbacks default to `off`, are absent from the default watch subscription,
+  and are dropped before agent processing if one still arrives.
 
 ## Complete repository validation
 
@@ -32,7 +36,7 @@ Exit status: `0`
 Observed summary:
 
 ```text
-305 passed, 1 warning in 2.70s
+329 passed, 1 warning in 3.82s
 plugin tools: imsg_action, imsg_poll
 requirements report: ok
 validate: PASS
@@ -49,58 +53,66 @@ The registration probe confirmed:
 - YAML and environment configuration hooks
 - `imsg_action` followed by `imsg_poll`
 
-## Focused documentation and release checks
+## Focused regression validation
 
-Command:
-
-```bash
-$HOME/.hermes/hermes-agent/venv/bin/python3 -m pytest \
-  tests/test_site_validation.py \
-  tests/test_release_safety.py \
-  tests/test_privacy_scan.py -q
-```
+Eleven focused tests covered both spellings of the native thread-origin field,
+rejection of false reply context, reaction association isolation, plain text,
+document, and voice response routing, default reaction mode, watch arguments,
+and the early reaction-drop boundary.
 
 Exit status: `0`
 
 Observed summary:
 
 ```text
-27 passed in 0.15s
+11 passed in 0.21s
 ```
 
-Additional commands:
+The outbound tests inject fake command and RPC runners. They assert that
+framework response correlation does not call `send.rich` or add a native
+`--reply-to` flag. The reaction boundary test makes every downstream pipeline
+operation fail if called, then confirms the cursor still advances without any
+agent dispatch.
+
+## Documentation, privacy, and bytecode checks
+
+Commands:
 
 ```bash
 python3 scripts/validate_site.py
 python3 scripts/privacy_scan.py
-$HOME/.hermes/hermes-agent/venv/bin/python3 -m compileall -q \
-  hermes_imsg_cli scripts tests
+python3 -m compileall -q hermes_imsg_cli scripts tests
 git diff --check
 ```
 
-Each command exited `0`. The site validator covered the deterministic contracts
-for `1440x900`, `768x1024`, `390x844`, and `320x700`. The privacy scan reported:
+Each command exited `0`. The site validator reported:
 
 ```text
-privacy/security scan: scanned 47 file(s); no findings; PASS
+site validation: PASS (viewport contracts: 1440x900, 768x1024, 390x844, 320x700)
+```
+
+The privacy scan reported:
+
+```text
+privacy/security scan: scanned 57 file(s); no findings; PASS
 ```
 
 Byte compilation and `git diff --check` produced no output.
 
 ## Package build
 
-The requested Hermes-venv command could not start because that environment
-does not contain the `build` module:
-
-```text
-$HOME/.hermes/hermes-agent/venv/bin/python3: No module named build
-```
-
-An isolated `pipx` invocation was then used without modifying the Hermes
-environment:
+On this host, `pipx` 1.13.0 no longer maps the package name `build` to its
+executable automatically. The first isolated invocation exited `1` and
+reported that the available executable is `pyproject-build`:
 
 ```bash
 pipx run build
+```
+
+The explicit package/executable form was then used:
+
+```bash
+pipx run --spec build pyproject-build
 ```
 
 Exit status: `0`
@@ -108,20 +120,20 @@ Exit status: `0`
 Observed artifacts:
 
 ```text
-dist/hermes_imsg_cli-2.0.0.tar.gz
-dist/hermes_imsg_cli-2.0.0-py3-none-any.whl
+dist/hermes_imsg_cli-2.0.1.tar.gz
+dist/hermes_imsg_cli-2.0.1-py3-none-any.whl
 ```
 
 Wheel metadata inspection confirmed:
 
 ```text
 Name: hermes-imsg-cli
-Version: 2.0.0
+Version: 2.0.1
 License: MIT
 Requires-Python: >=3.10
 ```
 
-The source archive contains `actions.py`, `capabilities.py`, and
+The source archive contains `actions.py`, `adapter.py`, `capabilities.py`, and
 `formatting.py`. Setuptools emitted a forward-looking warning that the current
 TOML license table form is deprecated after 2027-02-18. The build succeeded and
 the artifact metadata is correct.
@@ -131,8 +143,7 @@ the artifact metadata is correct.
 A read-only Python audit confirmed:
 
 ```text
-version: 2.0.0
-requires-python: >=3.10
+version: 2.0.1
 native actions: react, edit, unsend, reply, sendWithEffect, upload-file,
   renameGroup, setGroupIcon, addParticipant, removeParticipant, leaveGroup,
   poll, poll-vote, poll-unvote
@@ -140,26 +151,15 @@ action count: 14
 ```
 
 The runtime package version, project metadata, and plugin manifest all report
-`2.0.0`. The tool schema action enum is identical to the capability model's
-action list.
-
-`docs/PARITY.md` contains the required supported-functionality sections for
-messaging, native actions, polls, groups, inbound events, policy, recovery,
-requirements, and verification. It contains no comparison ledger or status
-table.
+`2.0.1`. Release consistency and bundled-skill tests are included in the full
+repository result.
 
 ## Read-only host capability probe
 
-Commands:
+The installed `imsg` version and sanitized status fields were read without
+opening message history or performing a mutation.
 
-```bash
-/opt/homebrew/bin/imsg --version
-/opt/homebrew/bin/imsg status --json |
-  jq '{advanced_features,v2_ready,bridge_version,rpc_methods,selectors,message}'
-/opt/homebrew/bin/imsg rpc --help
-```
-
-All commands exited `0`. Sanitized result:
+All probe commands exited `0`. Sanitized result:
 
 ```text
 imsg version: 0.13.0
@@ -167,52 +167,40 @@ advanced_features: true
 v2_ready: true
 bridge_version: 2
 message: Connected to Messages.app. IMCore features available.
+methods: send, send.rich, tapback, message.edit, message.unsend
+selectors:
+  editMessage: false
+  editMessageItem: false
+  retractMessagePart: true
 ```
 
-Relevant advertised methods:
+The current host therefore advertises both ordinary bridge send and explicit
+native reply support through `send.rich`. Edit remains correctly unavailable
+because both supported edit selectors are false; the client rejects it before
+mutation. This is capability evidence, not live mutation evidence.
 
-```text
-send
-send.rich
-send.attachment
-tapback
-typing
-read
-message.edit
-message.unsend
-poll.send
-messages.poll.send
-poll.vote
-messages.poll.vote
-poll.unvote
-polls.unvote
-messages.poll.unvote
-group.rename
-group.setIcon
-group.addParticipant
-group.removeParticipant
-group.leave
-```
+## Live mutation checks not performed
 
-Relevant selectors:
+No verification command:
 
-```text
-editMessage: false
-editMessageItem: false
-retractMessagePart: true
-pollPayloadMessage: true
-pollVoteMessage: true
-```
+- sent a live iMessage or SMS
+- marked a real chat read or emitted a typing indicator
+- added or removed a Tapback
+- edited or unsent a message
+- sent a native threaded reply or effect
+- uploaded an attachment
+- created, voted on, or removed a vote from a poll
+- renamed a group, changed its icon, changed membership, or left it
+- launched or injected the private bridge
+- changed SIP, TCC, or Messages sign-in state
 
-`imsg rpc --help` confirmed the stdin/stdout JSON-RPC command and its local
-database, log-level, verbosity, and JSON output flags.
+The automated suite verifies command and RPC contracts with injected runners
+and temporary files. Runtime installation and process health are verified
+separately without sending a message.
 
-This is capability evidence, not mutation evidence. No message content or chat
-history was read during the final probe.
+## Historical 2.0.0 test-isolation note
 
-## Test isolation incident
-
-During early test-driven development, one formatted-send test supplied a fake
+During 2.0.0 development on 2026-08-09, one formatted-send test supplied a fake
 RPC runner but left the default command runner in place. Before failing after
 roughly 27 seconds, it may have attempted this real command against local rowid
 16:
@@ -222,31 +210,6 @@ imsg send --chat-id 16 --text **bold**
 ```
 
 The possibility was disclosed immediately. No private chat was read afterward
-to determine whether Messages accepted it. The test harness was corrected so
-every mutation test uses fake runners, and all subsequent automated runs stayed
-inside that boundary.
-
-## Live mutation checks not performed
-
-No final verification command:
-
-- sent a live iMessage or SMS
-- marked a real chat read or emitted a typing indicator
-- added or removed a tapback
-- edited or unsent a message
-- sent a native threaded reply or effect
-- uploaded an attachment
-- created, voted on, or removed a vote from a poll
-- renamed a group, changed its icon, changed membership, or left it
-- launched or injected the private bridge
-- changed SIP, TCC, or Messages sign-in state
-
-The automated suite verifies the command and RPC contracts with in-memory
-runners and temporary files. Live behavior remains an operator-controlled test
-against a deliberately selected disposable conversation.
-
-## Repository state
-
-All changes remain unstaged in the isolated worktree. No commit, push, pull
-request, Pages deployment, Hermes restart, or live configuration change was
-performed.
+to determine whether Messages accepted it. The mutation tests use fake runners,
+and the suite now also clears ambient `IMSG_*` variables around every test so
+personal live policy cannot alter fixture behavior.
