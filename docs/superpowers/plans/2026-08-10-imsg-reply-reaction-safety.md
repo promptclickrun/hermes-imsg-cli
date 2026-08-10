@@ -19,7 +19,49 @@
 - Under `off`, reaction rows cannot reach authorization, history lookup, read receipts, or agent dispatch.
 - Existing `own` and `all` modes remain explicit opt-ins.
 - Tests must fake every mutation boundary; verification must not send or modify a real Messages conversation.
+- Tests must clear inherited `IMSG_*` policy variables before each case so the operator's live automation configuration cannot change fixture defaults.
 - Do not change unrelated Hermes configuration, allowlists, automation definitions, or routing.
+
+---
+
+### Task 0: Isolate tests from the live Hermes policy environment
+
+**Files:**
+- Create: `tests/conftest.py`
+
+**Interfaces:**
+- Consumes: inherited process environment variables whose names begin with `IMSG_`.
+- Produces: a deterministic per-test environment; tests that exercise environment behavior set their own values after the fixture runs.
+
+- [ ] **Step 1: Prove the baseline passes when active policy variables are absent**
+
+Run `scripts/validate.sh` with `IMSG_PARTICIPANT_VALIDATION`, `IMSG_POLL_VOTES_DM`, `IMSG_POLL_VOTES_GROUP`, and `IMSG_POLL_UNVOTES` unset for that command. Expected: the adapter default tests pass, proving the failures came from inherited live policy rather than the checked-in production baseline.
+
+- [ ] **Step 2: Add an autouse environment-isolation fixture**
+
+```python
+import os
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_imsg_environment(monkeypatch):
+    for name in tuple(os.environ):
+        if name.startswith("IMSG_"):
+            monkeypatch.delenv(name, raising=False)
+```
+
+- [ ] **Step 3: Re-run validation under deliberately hostile values**
+
+Run `scripts/validate.sh` while exporting strict participant validation and enabled poll-vote delivery for the command. Expected: the full suite still passes because every test begins from a clean plugin environment.
+
+- [ ] **Step 4: Commit the deterministic test boundary**
+
+```bash
+git add tests/conftest.py docs/superpowers/plans/2026-08-10-imsg-reply-reaction-safety.md
+git commit -m "test(imsg): isolate live policy from fixtures"
+```
 
 ---
 
@@ -326,8 +368,8 @@ git commit -m "docs(imsg): publish reply and Tapback safety contract"
 
 **Files:**
 - Modify: `docs/VERIFICATION.md`
-- Runtime update: `/Users/gordieai/.hermes/config.yaml`
-- Runtime link: `/Users/gordieai/.hermes/plugins/imsg-platform`
+- Runtime update: `$HOME/.hermes/config.yaml`
+- Runtime link: `$HOME/.hermes/plugins/imsg-platform`
 
 **Interfaces:**
 - Consumes: complete feature branch, clean `main`, existing `ai.hermes.gateway*` launchd services, and the personal Hermes plugin configuration.
@@ -367,11 +409,11 @@ Push without force. Fetch `origin/main` and verify `git rev-parse HEAD` equals `
 
 - [ ] **Step 6: Back up and migrate only the reaction setting**
 
-Inspect the effective iMessage platform configuration and any `IMSG_REACTION_NOTIFICATIONS` override without printing unrelated values. Create a timestamped backup of `/Users/gordieai/.hermes/config.yaml`, then set the iMessage platform extra value to `reaction_notifications: off` while preserving every other YAML node and comment. Abort if an environment override would re-enable reactions.
+Inspect the effective iMessage platform configuration and any `IMSG_REACTION_NOTIFICATIONS` override without printing unrelated values. Create a timestamped backup of `$HOME/.hermes/config.yaml`, then set the iMessage platform extra value to `reaction_notifications: off` while preserving every other YAML node and comment. Abort if an environment override would re-enable reactions.
 
 - [ ] **Step 7: Install from stable main and restart the relevant gateway**
 
-Run `scripts/install-local.sh` from `/Users/gordieai/hermes-imsg-cli`. Confirm the symlink resolves to `/Users/gordieai/hermes-imsg-cli/hermes_imsg_cli` and the manifest reports `2.0.1`.
+Run `scripts/install-local.sh` from the stable repository root. Confirm the plugin symlink resolves to that checkout's `hermes_imsg_cli` directory and the manifest reports `2.0.1`.
 
 Use Hermes' supported `gateway restart` command for the active profile that loads the personal iMessage platform. Do not restart unrelated dashboard or gateway profiles. Preserve in-flight session recovery behavior provided by Hermes.
 
