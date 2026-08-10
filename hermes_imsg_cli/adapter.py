@@ -1205,6 +1205,35 @@ class ImsgAdapter(BasePlatformAdapter):
         message_id = _event_guid(event) or (
             str(_event_rowid(event)) if _event_rowid(event) is not None else None
         )
+        thread_originator = _event_get(
+            event, "thread_originator_guid", "threadOriginatorGuid"
+        )
+        thread_originator = (
+            thread_originator.strip()
+            if isinstance(thread_originator, str) and thread_originator.strip()
+            else None
+        )
+        has_reply_context = (
+            thread_originator is not None
+            and reaction is None
+            and poll_kind is None
+        )
+        reply_to_text = _event_get(event, "reply_to_text", "replyToText")
+        reply_to_text = (
+            reply_to_text
+            if has_reply_context
+            and isinstance(reply_to_text, str)
+            and reply_to_text.strip()
+            else None
+        )
+        reply_to_author = _event_get(event, "reply_to_sender", "replyToSender")
+        reply_to_author = (
+            reply_to_author.strip()
+            if has_reply_context
+            and isinstance(reply_to_author, str)
+            and reply_to_author.strip()
+            else None
+        )
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_name,
@@ -1222,9 +1251,9 @@ class ImsgAdapter(BasePlatformAdapter):
             message_id=message_id,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=_event_get(event, "reply_to_guid", "replyToGuid"),
-            reply_to_text=_event_get(event, "reply_to_text", "replyToText"),
-            reply_to_author_id=_event_get(event, "reply_to_sender", "replyToSender"),
+            reply_to_message_id=thread_originator if has_reply_context else None,
+            reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author,
             metadata=metadata,
         )
 

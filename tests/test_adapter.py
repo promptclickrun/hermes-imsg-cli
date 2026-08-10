@@ -129,6 +129,80 @@ def test_event_to_message_event_prefers_identity_alias(tmp_path):
     assert message.source.user_name == "Family Member"
 
 
+def test_plain_event_ignores_unreliable_reply_to_fields(tmp_path):
+    adapter = make_adapter(tmp_path)
+    message = adapter._to_message_event({
+        "id": 104,
+        "chat_id": 3,
+        "chat_guid": "iMessage;-;+12025550101",
+        "guid": "CURRENT",
+        "sender": "+12025550101",
+        "text": "ordinary message",
+        "reply_to_guid": "MOST-RECENT",
+        "reply_to_text": "not an actual quoted parent",
+        "reply_to_sender": "+12025550101",
+    })
+    assert message is not None
+    assert message.reply_to_message_id is None
+    assert message.reply_to_text is None
+    assert message.reply_to_author_id is None
+
+
+def test_thread_originator_exposes_real_reply_context(tmp_path):
+    adapter = make_adapter(tmp_path)
+    message = adapter._to_message_event({
+        "id": 105,
+        "chat_id": 3,
+        "chat_guid": "iMessage;-;+12025550101",
+        "guid": "CURRENT",
+        "sender": "+12025550101",
+        "text": "that older one",
+        "reply_to_guid": "UNRELIABLE",
+        "thread_originator_guid": "ACTUAL-PARENT",
+        "reply_to_text": "the message from six turns ago",
+        "reply_to_sender": "+12025550199",
+    })
+    assert message is not None
+    assert message.reply_to_message_id == "ACTUAL-PARENT"
+    assert message.reply_to_text == "the message from six turns ago"
+    assert message.reply_to_author_id == "+12025550199"
+
+
+def test_thread_originator_camel_case_exposes_real_reply_context(tmp_path):
+    adapter = make_adapter(tmp_path)
+    message = adapter._to_message_event({
+        "id": 106,
+        "chat_id": 3,
+        "guid": "CURRENT",
+        "sender": "+12025550101",
+        "text": "camel case reply",
+        "threadOriginatorGuid": "CAMEL-PARENT",
+        "replyToText": "camel parent text",
+        "replyToSender": "+12025550199",
+    })
+    assert message is not None
+    assert message.reply_to_message_id == "CAMEL-PARENT"
+    assert message.reply_to_text == "camel parent text"
+    assert message.reply_to_author_id == "+12025550199"
+
+
+def test_reaction_association_does_not_expose_reply_context(tmp_path):
+    adapter = make_adapter(
+        tmp_path, allow_all=True, reaction_notifications="all"
+    )
+    event = _reaction_event(target="BOT-MESSAGE")
+    event.update({
+        "thread_originator_guid": "ASSOCIATED-PARENT",
+        "reply_to_text": "associated body",
+        "reply_to_sender": "+12025550199",
+    })
+    message = adapter._to_message_event(event)
+    assert message is not None
+    assert message.reply_to_message_id is None
+    assert message.reply_to_text is None
+    assert message.reply_to_author_id is None
+
+
 def _poll_vote_event(*, is_group=False, event="imessage.poll.voted"):
     return {
         "id": 101,
