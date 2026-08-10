@@ -1422,23 +1422,13 @@ class ImsgAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        """Send by exact rowid, using a thread only for trusted same-chat IDs."""
-        del metadata
+        """Send an ordinary response by exact rowid without native threading."""
+        del reply_to, metadata
         chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH)
         last_message_id = None
         continuations: list[str] = []
-        trusted_reply = self._trusted_reply_target(chat_id, reply_to)
-        for index, chunk in enumerate(chunks):
-            if index == 0 and trusted_reply:
-                chat_guid, message_guid = trusted_reply
-                result = await self._send_rich_reply(
-                    chat_id,
-                    chat_guid,
-                    message_guid,
-                    chunk,
-                )
-            else:
-                result = await self._send_plain(chat_id, chunk)
+        for chunk in chunks:
+            result = await self._send_plain(chat_id, chunk)
             if not result.success:
                 return result
             if last_message_id:
@@ -1449,20 +1439,6 @@ class ImsgAdapter(BasePlatformAdapter):
             message_id=last_message_id,
             continuation_message_ids=tuple(continuations),
         )
-
-    def _trusted_reply_target(
-        self, chat_id: str, reply_to: Optional[str]
-    ) -> Optional[tuple[str, str]]:
-        rowid = str(chat_id)
-        message_guid = str(reply_to or "").strip()
-        if not message_guid:
-            return None
-        if self._recent_message_guids.get(rowid) != message_guid:
-            return None
-        chat_guid = self._recent_chat_guids.get(rowid)
-        if not chat_guid:
-            return None
-        return chat_guid, message_guid
 
     def _send_result_from_native(
         self, chat_id: str, result: dict[str, Any]
@@ -1475,34 +1451,6 @@ class ImsgAdapter(BasePlatformAdapter):
             message_id=message_id,
             raw_response=raw_response,
         )
-
-    async def _send_rich_reply(
-        self,
-        chat_id: str,
-        chat_guid: str,
-        reply_to: str,
-        content: str,
-        media_files: Optional[list[tuple[str, bool]]] = None,
-    ) -> SendResult:
-        files = list(media_files or [])
-        if len(files) > 1:
-            return SendResult(
-                success=False,
-                error="imsg rich reply accepts one attachment per invocation",
-            )
-        file_path = files[0][0] if files else None
-        try:
-            result = await self._client().send_rich(
-                chat_guid,
-                content,
-                reply_to=reply_to,
-                file=file_path,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            return SendResult(success=False, error=_redact(exc))
-        return self._send_result_from_native(str(chat_id), result)
 
     async def _send_plain(
         self,
@@ -1551,16 +1499,7 @@ class ImsgAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         text = caption or ""
-        trusted_reply = self._trusted_reply_target(chat_id, reply_to)
-        if trusted_reply:
-            chat_guid, message_guid = trusted_reply
-            return await self._send_rich_reply(
-                chat_id,
-                chat_guid,
-                message_guid,
-                text,
-                media_files=[(file_path, False)],
-            )
+        del file_name, reply_to, metadata, kwargs
         return await self._send_plain(chat_id, text, media_files=[(file_path, False)])
 
     async def send_image_file(
@@ -1594,16 +1533,7 @@ class ImsgAdapter(BasePlatformAdapter):
         metadata: Optional[dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        trusted_reply = self._trusted_reply_target(chat_id, reply_to)
-        if trusted_reply:
-            chat_guid, message_guid = trusted_reply
-            return await self._send_rich_reply(
-                chat_id,
-                chat_guid,
-                message_guid,
-                caption or "",
-                media_files=[(audio_path, True)],
-            )
+        del reply_to, metadata, kwargs
         return await self._send_plain(
             chat_id, caption or "", media_files=[(audio_path, True)]
         )

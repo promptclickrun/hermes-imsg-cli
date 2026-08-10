@@ -526,35 +526,53 @@ async def test_send_plain_uses_chat_id_not_guid(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_send_uses_rich_reply_only_for_cached_same_chat_reference(monkeypatch, tmp_path):
+async def test_send_reply_correlation_uses_plain_rowid_rpc(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
     adapter._recent_chat_guids["16"] = "CHAT-16"
     adapter._recent_message_guids["16"] = "MSG-16"
-    seen_args = []
+    cli_calls = []
+    rpc_calls = []
 
     async def fake_run(args):
-        seen_args.append(args)
+        cli_calls.append(args)
         if args[0] == "status":
             return 0, json.dumps({
                 "advanced_features": True,
                 "v2_ready": True,
-                "rpc_methods": ["send.rich"],
+                "rpc_methods": ["send", "send.rich"],
                 "selectors": {},
             }), ""
         return 0, json.dumps({"guid": "OUT"}), ""
 
+    async def fake_rpc(request):
+        rpc_calls.append(request)
+        return 0, json.dumps({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "result": {"guid": "OUT"},
+        }), ""
+
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    monkeypatch.setattr(adapter, "_run_imsg_rpc", fake_rpc)
     result = await adapter.send(
         "16",
-        "**reply**",
+        "reply",
         reply_to="MSG-16",
         metadata={"chat_guid": "FORGED-OTHER-CHAT"},
     )
     assert result.success is True
-    assert seen_args[0] == ["status", "--json"]
-    assert seen_args[1][:5] == ["send-rich", "--chat", "CHAT-16", "--text", "reply"]
-    assert seen_args[1][seen_args[1].index("--reply-to") + 1] == "MSG-16"
-    assert "FORGED-OTHER-CHAT" not in seen_args[1]
+    assert cli_calls == [["status", "--json"]]
+    assert rpc_calls == [{
+        "jsonrpc": "2.0",
+        "id": "hermes-send",
+        "method": "send",
+        "params": {
+            "text": "reply",
+            "service": "auto",
+            "transport": "bridge",
+            "chat_id": 16,
+        },
+    }]
     assert result.message_id == "OUT"
     assert adapter._sent_message_guids["OUT"] == "16"
 
@@ -585,7 +603,7 @@ async def test_send_ignores_cross_chat_reply_reference(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_safe_reply_capability_failure_does_not_retry_plain(monkeypatch, tmp_path):
+async def test_reply_correlation_does_not_require_rich_capability(monkeypatch, tmp_path):
     adapter = make_adapter(tmp_path, binary="imsg")
     adapter._recent_chat_guids["16"] = "CHAT-16"
     adapter._recent_message_guids["16"] = "MSG-16"
@@ -593,18 +611,23 @@ async def test_safe_reply_capability_failure_does_not_retry_plain(monkeypatch, t
 
     async def fake_run(args):
         calls.append(args)
-        return 0, json.dumps({
-            "advanced_features": True,
-            "v2_ready": True,
-            "rpc_methods": [],
-            "selectors": {},
-        }), ""
+        if args[0] == "status":
+            return 0, json.dumps({
+                "advanced_features": True,
+                "v2_ready": True,
+                "rpc_methods": [],
+                "selectors": {},
+            }), ""
+        return 0, json.dumps({"guid": "OUT"}), ""
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
     result = await adapter.send("16", "reply", reply_to="MSG-16")
-    assert result.success is False
-    assert "send.rich" in result.error
-    assert calls == [["status", "--json"]]
+    assert result.success is True
+    assert result.message_id == "OUT"
+    assert calls == [
+        ["status", "--json"],
+        ["send", "--chat-id", "16", "--text", "reply", "--json"],
+    ]
 
 
 @pytest.mark.asyncio
@@ -634,7 +657,7 @@ async def test_formatted_plain_send_uses_rowid_rpc_without_cli_retry(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_reply_attachment_uses_same_chat_rich_send(monkeypatch, tmp_path):
+async def test_reply_attachment_correlation_uses_plain_file_send(monkeypatch, tmp_path):
     attachment = tmp_path / "reply.txt"
     attachment.write_text("synthetic")
     adapter = make_adapter(tmp_path, binary="imsg")
@@ -644,13 +667,6 @@ async def test_reply_attachment_uses_same_chat_rich_send(monkeypatch, tmp_path):
 
     async def fake_run(args):
         calls.append(args)
-        if args[0] == "status":
-            return 0, json.dumps({
-                "advanced_features": True,
-                "v2_ready": True,
-                "rpc_methods": ["send.rich"],
-                "selectors": {},
-            }), ""
         return 0, json.dumps({"guid": "ATTACHMENT-REPLY"}), ""
 
     monkeypatch.setattr(adapter, "_run_imsg", fake_run)
@@ -658,8 +674,36 @@ async def test_reply_attachment_uses_same_chat_rich_send(monkeypatch, tmp_path):
         "16", str(attachment), caption="file", reply_to="MSG-16"
     )
     assert result.success is True
-    assert calls[1][0] == "send-rich"
-    assert calls[1][calls[1].index("--file") + 1] == str(attachment)
+    assert calls == [[
+        "send", "--chat-id", "16", "--text", "file",
+        "--file", str(attachment), "--json",
+    ]]
+    assert "--reply-to" not in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_reply_voice_correlation_uses_plain_file_send(monkeypatch, tmp_path):
+    audio = tmp_path / "reply.m4a"
+    audio.write_bytes(b"synthetic")
+    adapter = make_adapter(tmp_path, binary="imsg")
+    adapter._recent_chat_guids["16"] = "CHAT-16"
+    adapter._recent_message_guids["16"] = "MSG-16"
+    calls = []
+
+    async def fake_run(args):
+        calls.append(args)
+        return 0, json.dumps({"guid": "VOICE-REPLY"}), ""
+
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    result = await adapter.send_voice(
+        "16", str(audio), caption="voice", reply_to="MSG-16"
+    )
+    assert result.success is True
+    assert calls == [[
+        "send", "--chat-id", "16", "--text", "voice",
+        "--file", str(audio), "--json",
+    ]]
+    assert "--reply-to" not in calls[0]
 
 
 def test_adapter_watch_args_enable_reaction_rows(tmp_path):
