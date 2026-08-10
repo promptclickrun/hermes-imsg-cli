@@ -426,12 +426,12 @@ class ImsgAdapter(BasePlatformAdapter):
         reaction_notifications = str(
             extra.get("reaction_notifications")
             or os.getenv(ENV_REACTION_NOTIFICATIONS)
-            or "own"
+            or "off"
         ).strip().lower()
         self.reaction_notifications = (
             reaction_notifications
             if reaction_notifications in {"own", "all", "off"}
-            else "own"
+            else "off"
         )
         poll_events = extra.get("poll_vote_events")
         poll_events = poll_events if isinstance(poll_events, dict) else {}
@@ -994,11 +994,11 @@ class ImsgAdapter(BasePlatformAdapter):
         await self._process_watch_event(event)
 
     def _build_watch_args(self) -> list[str]:
-        """Build the supervised watch command, including structured tapbacks."""
+        """Build the supervised watch command for the configured event policy."""
         return cli.build_watch_args(
             self.debounce,
             self._last_rowid,
-            reactions=True,
+            reactions=self.reaction_notifications != "off",
         )
 
     async def _watch_loop(self) -> None:
@@ -1104,6 +1104,8 @@ class ImsgAdapter(BasePlatformAdapter):
         if rowid is not None and (self._last_rowid is None or rowid > self._last_rowid):
             self._last_rowid = rowid
             self._persist_last_rowid()
+        if self.reaction_notifications == "off" and _is_reaction_event(event):
+            return
         self._remember_event_ids(event)
         if not await self._should_process_async(event):
             return

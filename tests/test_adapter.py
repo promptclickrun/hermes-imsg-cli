@@ -269,7 +269,9 @@ def _poll_created_event():
 
 
 def test_reaction_notifications_own_accepts_only_bot_target(tmp_path):
-    adapter = make_adapter(tmp_path, allow_all=True)
+    adapter = make_adapter(
+        tmp_path, allow_all=True, reaction_notifications="own"
+    )
     adapter._sent_message_guids["BOT-MESSAGE"] = "3"
     accepted = adapter._to_message_event(_reaction_event())
     assert accepted is not None
@@ -298,7 +300,39 @@ def test_reaction_notification_environment_and_invalid_default(monkeypatch, tmp_
     monkeypatch.setenv("IMSG_REACTION_NOTIFICATIONS", "all")
     assert make_adapter(tmp_path).reaction_notifications == "all"
     monkeypatch.setenv("IMSG_REACTION_NOTIFICATIONS", "invalid")
-    assert make_adapter(tmp_path).reaction_notifications == "own"
+    assert make_adapter(tmp_path).reaction_notifications == "off"
+
+
+def test_reaction_notifications_default_off(monkeypatch, tmp_path):
+    monkeypatch.delenv("IMSG_REACTION_NOTIFICATIONS", raising=False)
+    assert make_adapter(tmp_path).reaction_notifications == "off"
+
+
+@pytest.mark.asyncio
+async def test_reaction_off_stops_before_pipeline_side_effects(monkeypatch, tmp_path):
+    adapter = make_adapter(
+        tmp_path,
+        reaction_notifications="off",
+        send_read_receipts=True,
+    )
+
+    def forbidden_sync(*args, **kwargs):
+        raise AssertionError("suppressed reaction entered the synchronous pipeline")
+
+    async def forbidden_async(*args, **kwargs):
+        raise AssertionError("suppressed reaction entered the asynchronous pipeline")
+
+    monkeypatch.setattr(adapter, "_remember_event_ids", forbidden_sync)
+    monkeypatch.setattr(adapter, "_should_process_async", forbidden_async)
+    monkeypatch.setattr(
+        adapter, "_remember_reaction_target_ownership", forbidden_async
+    )
+    monkeypatch.setattr(adapter, "mark_read", forbidden_async)
+    monkeypatch.setattr(adapter, "handle_message", forbidden_async)
+
+    await adapter._process_watch_event(_reaction_event())
+
+    assert adapter._last_rowid == 102
 
 
 @pytest.mark.asyncio
@@ -309,6 +343,7 @@ async def test_process_reaction_own_resolves_historical_bot_target(
         tmp_path,
         binary="imsg",
         allowed_handles=["+12025550101"],
+        reaction_notifications="own",
         send_read_receipts=False,
     )
     delivered = []
@@ -341,6 +376,7 @@ async def test_unauthorized_reaction_stops_before_ownership_lookup(monkeypatch, 
         tmp_path,
         binary="imsg",
         allowed_handles=["+12025550199"],
+        reaction_notifications="own",
         send_read_receipts=False,
     )
     called = False
@@ -706,9 +742,15 @@ async def test_reply_voice_correlation_uses_plain_file_send(monkeypatch, tmp_pat
     assert "--reply-to" not in calls[0]
 
 
-def test_adapter_watch_args_enable_reaction_rows(tmp_path):
-    adapter = make_adapter(tmp_path)
-    assert "--reactions" in adapter._build_watch_args()
+def test_adapter_watch_args_follow_reaction_policy(monkeypatch, tmp_path):
+    monkeypatch.delenv("IMSG_REACTION_NOTIFICATIONS", raising=False)
+    assert "--reactions" not in make_adapter(tmp_path)._build_watch_args()
+    assert "--reactions" in make_adapter(
+        tmp_path, reaction_notifications="own"
+    )._build_watch_args()
+    assert "--reactions" in make_adapter(
+        tmp_path, reaction_notifications="all"
+    )._build_watch_args()
 
 
 @pytest.mark.asyncio
