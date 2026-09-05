@@ -118,10 +118,12 @@ inside the selected chat, and only then calls the bridge reply method. This
 separates framework response bookkeeping from user-visible Apple Messages
 threading.
 
-Inbound reply context follows the same explicit-evidence rule. A normal message
-gets Hermes reply context only from a non-empty `thread_originator_guid` or
-`threadOriginatorGuid`. `reply_to_guid` alone is ignored because it is not a
-reliable indication that the user used the native quote-reply gesture.
+Inbound reply context follows the same explicit-evidence rule. A non-empty
+`thread_originator_guid` or `threadOriginatorGuid` remains authoritative. For a
+short confirmation without one, the adapter may perform a bounded history read
+and expose context only after the current row resolves to a bot-authored
+question in the exact source chat. `reply_to_guid` alone remains ignored because
+it is not reliable evidence of the user's intended referent.
 
 ## Native action flow
 

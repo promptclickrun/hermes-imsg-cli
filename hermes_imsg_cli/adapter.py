@@ -96,6 +96,11 @@ PLATFORM_HINT = (
     "originating chat; never try to redirect a reply to a different chat."
 )
 
+_SHORT_CONFIRMATION_RE = re.compile(
+    r"^(?:yes|yeah|yep|yup|no|nope|ok|okay|sure|done|continue|do it|go ahead|proceed)[.!?]*$",
+    re.IGNORECASE,
+)
+
 
 # ---------------------------------------------------------------------------
 # Event field accessors (imsg watch JSON is intentionally permissive)
@@ -1110,6 +1115,7 @@ class ImsgAdapter(BasePlatformAdapter):
         if not await self._should_process_async(event):
             return
         await self._remember_reaction_target_ownership(event)
+        await self._hydrate_short_confirmation_context(event)
         # Mark the chat read (fire-and-forget) so a slow IMCore read never
         # delays message handling.
         chat_id = _event_chat_id(event)
@@ -1119,6 +1125,86 @@ class ImsgAdapter(BasePlatformAdapter):
         if message_event is None:
             return
         await self.handle_message(message_event)
+
+    async def _hydrate_short_confirmation_context(self, event: dict[str, Any]) -> None:
+        """Recover a narrow same-chat parent for short confirmation messages.
+
+        ``reply_to_guid`` alone is not a native thread signal, so it remains
+        untrusted. A fallback becomes agent-visible only after a bounded
+        history read proves that the current row points to a bot-authored
+        question in the exact source chat.
+        """
+        if _event_get(event, "thread_originator_guid", "threadOriginatorGuid"):
+            return
+        if _is_reaction_event(event) or _poll_event_kind(event):
+            return
+        text = _event_text(event).strip()
+        if not _SHORT_CONFIRMATION_RE.fullmatch(text):
+            return
+        chat_id = _event_chat_id(event)
+        reply_guid = _event_get(event, "reply_to_guid", "replyToGuid")
+        if not chat_id or not isinstance(reply_guid, str) or not reply_guid.strip():
+            return
+        reply_guid = reply_guid.strip()
+        try:
+            history = await self.get_history(
+                chat_id,
+                limit=40,
+                attachments=False,
+                convert_attachments=False,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[imsg] short confirmation context lookup failed: %s",
+                _redact(exc),
+            )
+            return
+
+        current_guid = _event_guid(event)
+        current_rowid = _event_rowid(event)
+        current = next(
+            (
+                row
+                for row in history
+                if (current_guid and _event_guid(row) == current_guid)
+                or (
+                    current_rowid is not None
+                    and _event_rowid(row) == current_rowid
+                )
+            ),
+            None,
+        )
+        if not isinstance(current, dict):
+            return
+        history_reply_guid = _event_get(current, "reply_to_guid", "replyToGuid")
+        if (
+            not isinstance(history_reply_guid, str)
+            or history_reply_guid.strip() != reply_guid
+        ):
+            return
+
+        parent = next(
+            (
+                row
+                for row in history
+                if _event_guid(row) == reply_guid
+                and _event_chat_id(row) == chat_id
+            ),
+            None,
+        )
+        if not isinstance(parent, dict) or not _as_bool(
+            parent.get("is_from_me"), False
+        ):
+            return
+        parent_text = _event_text(parent).strip()
+        if not parent_text or (
+            "?" not in parent_text
+            and "reply yes or no" not in parent_text.casefold()
+        ):
+            return
+
+        event["_validated_reply_to_guid"] = reply_guid
+        event["_validated_reply_to_text"] = parent_text
 
     def _poll_event_enabled(self, event: dict[str, Any], kind: str) -> bool:
         chat_id = _event_chat_id(event)
@@ -1215,12 +1301,25 @@ class ImsgAdapter(BasePlatformAdapter):
             if isinstance(thread_originator, str) and thread_originator.strip()
             else None
         )
+        validated_reply_origin = _event_get(event, "_validated_reply_to_guid")
+        validated_reply_origin = (
+            validated_reply_origin.strip()
+            if isinstance(validated_reply_origin, str)
+            and validated_reply_origin.strip()
+            else None
+        )
+        reply_origin = thread_originator or validated_reply_origin
         has_reply_context = (
-            thread_originator is not None
+            reply_origin is not None
             and reaction is None
             and poll_kind is None
         )
-        reply_to_text = _event_get(event, "reply_to_text", "replyToText")
+        reply_to_text = _event_get(
+            event,
+            "_validated_reply_to_text",
+            "reply_to_text",
+            "replyToText",
+        )
         reply_to_text = (
             reply_to_text
             if has_reply_context
@@ -1228,7 +1327,11 @@ class ImsgAdapter(BasePlatformAdapter):
             and reply_to_text.strip()
             else None
         )
-        reply_to_author = _event_get(event, "reply_to_sender", "replyToSender")
+        reply_to_author = (
+            None
+            if validated_reply_origin is not None
+            else _event_get(event, "reply_to_sender", "replyToSender")
+        )
         reply_to_author = (
             reply_to_author.strip()
             if has_reply_context
@@ -1253,9 +1356,10 @@ class ImsgAdapter(BasePlatformAdapter):
             message_id=message_id,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=thread_originator if has_reply_context else None,
+            reply_to_message_id=reply_origin if has_reply_context else None,
             reply_to_text=reply_to_text,
             reply_to_author_id=reply_to_author,
+            reply_to_is_own_message=validated_reply_origin is not None,
             metadata=metadata,
         )
 

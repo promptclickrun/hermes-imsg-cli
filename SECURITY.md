@@ -40,10 +40,12 @@ Any change that weakens one of these is a regression, not a feature:
   matching, or caller-supplied metadata can redirect a reply. Framework
   `reply_to` correlation never requests an Apple Messages thread; only the
   explicit native `reply` action can do so after a same-chat lookup.
-- **Quoted context requires a native thread origin.** The adapter exposes reply
-  context only when `thread_originator_guid` or `threadOriginatorGuid` is a
-  non-empty string. `reply_to_guid` by itself is not trusted because it can
-  identify an unrelated recent message.
+- **Quoted context requires validated same-chat evidence.** A non-empty
+  `thread_originator_guid` remains authoritative. For a short confirmation
+  without one, the adapter performs a bounded history read and exposes context
+  only when the current row points to a bot-authored question in the exact
+  source chat. Raw `reply_to_guid` fields alone remain untrusted because they
+  can identify an unrelated recent message.
 - **Tapbacks are silent by default.** With reaction notifications `off`, the
   watch subscription omits reactions and any reaction that still arrives is
   dropped after cursor persistence but before authorization, history lookup,
