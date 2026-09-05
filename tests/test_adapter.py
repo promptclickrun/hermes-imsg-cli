@@ -203,6 +203,75 @@ def test_reaction_association_does_not_expose_reply_context(tmp_path):
     assert message.reply_to_author_id is None
 
 
+@pytest.mark.asyncio
+async def test_process_short_confirmation_hydrates_same_chat_bot_question(
+    monkeypatch, tmp_path
+):
+    adapter = make_adapter(
+        tmp_path,
+        allow_all=True,
+        send_read_receipts=False,
+    )
+    question = "Do you want me to use one now? Reply yes or no."
+    event = {
+        "id": 105,
+        "chat_id": 3,
+        "chat_guid": "iMessage;-;+12025550101",
+        "guid": "CURRENT",
+        "sender": "+12025550101",
+        "text": "Yes",
+        "reply_to_guid": "BOT-QUESTION",
+        "reply_to_text": question,
+    }
+    history = [
+        {
+            "id": 105,
+            "chat_id": 3,
+            "guid": "CURRENT",
+            "sender": "+12025550101",
+            "is_from_me": False,
+            "text": "Yes",
+            "reply_to_guid": "BOT-QUESTION",
+            "reply_to_text": question,
+        },
+        {
+            "id": 104,
+            "chat_id": 3,
+            "guid": "BOT-QUESTION",
+            "is_from_me": True,
+            "text": question,
+        },
+    ]
+    calls = []
+    delivered = []
+
+    async def fake_run(args):
+        calls.append(args)
+        return 0, "\n".join(json.dumps(row) for row in history) + "\n", ""
+
+    async def fake_handle(message):
+        delivered.append(message)
+
+    monkeypatch.setattr(adapter, "_run_imsg", fake_run)
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    await adapter._process_watch_event(event)
+
+    assert calls == [[
+        "history",
+        "--chat-id",
+        "3",
+        "--limit",
+        "40",
+        "--json",
+    ]]
+    assert len(delivered) == 1
+    assert delivered[0].reply_to_message_id == "BOT-QUESTION"
+    assert delivered[0].reply_to_text == question
+    assert delivered[0].reply_to_author_id is None
+    assert delivered[0].reply_to_is_own_message is True
+
+
 def _poll_vote_event(*, is_group=False, event="imessage.poll.voted"):
     return {
         "id": 101,

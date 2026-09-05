@@ -364,9 +364,11 @@ plugin's operating contract:
   message GUID only through the explicit `imsg_action` `reply` action after a
   same-chat lookup. Framework `reply_to` metadata never requests native
   threading.
-- Inbound quote context is exposed only when the event contains a non-empty
-  `thread_originator_guid` (or its camel-case alias). The unreliable
-  `reply_to_guid` field alone is ignored.
+- Inbound quote context is exposed when the event contains a non-empty
+  `thread_originator_guid` (or its camel-case alias). A short confirmation can
+  also recover context after a bounded history read validates that its parent
+  is a bot-authored question in the exact source chat. The unreliable
+  `reply_to_guid` field alone is still ignored.
 - Tapbacks are silent by default. In `off` mode the watch process does not
   request reaction events, and any reaction that still arrives is dropped
   immediately after cursor persistence, before authorization, history lookup,

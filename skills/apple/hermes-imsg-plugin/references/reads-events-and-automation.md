@@ -97,8 +97,10 @@ Accepted events can preserve:
 - sender and participant metadata,
 - group metadata,
 - attachments and resolved converted/original paths,
-- reply text and sender only when a non-empty native thread originator is
-  present; `reply_to_guid` alone is ignored,
+- reply text and sender when a non-empty native thread originator is present,
+  or for a short confirmation after a bounded history read validates that its
+  parent is a bot-authored question in the exact source chat; raw
+  `reply_to_guid` alone is ignored,
 - structured reaction context,
 - complete poll objects and vote updates.
 
