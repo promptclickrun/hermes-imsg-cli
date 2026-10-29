@@ -173,6 +173,7 @@ precedence over YAML.
 | `IMSG_ALLOWED_CHATS` | Group chat rowids. |
 | `IMSG_ALLOW_ALL_USERS` | Development-only admission. Self events remain suppressed. |
 | `IMSG_REQUIRE_MENTION` / `IMSG_MENTION_PATTERNS` | Group mention gating and patterns. |
+| `IMSG_GROUP_SILENCE` | Default `true`: unaddressed group messages may end silently (`reply_expected: false`). `false` keeps Hermes' visible silence warning. |
 | `IMSG_AUTO_LAUNCH` | Re-arm an already configured private bridge on connect. |
 | `IMSG_SEND_READ_RECEIPTS` | Best-effort private bridge read marking. |
 | `IMSG_REACTION_NOTIFICATIONS` | `own`, `all`, or `off`; default `off`. Opt-in modes can start agent turns. |

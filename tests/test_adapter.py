@@ -391,6 +391,102 @@ async def test_unauthorized_reaction_stops_before_ownership_lookup(monkeypatch, 
     assert called is False
 
 
+# ---------------------------------------------------------------------------
+# reply_expected: may a bare silence marker stand? (Hermes core reads it)
+# ---------------------------------------------------------------------------
+
+def _group_text_event(text, **overrides):
+    event = {
+        "id": 120,
+        "chat_id": 16,
+        "guid": "GROUP-MSG",
+        "sender": "+120****0101",
+        "text": text,
+        "is_group": True,
+        "chat_name": "Family",
+    }
+    event.update(overrides)
+    return event
+
+
+def test_group_message_to_someone_else_lets_silence_stand(tmp_path):
+    from gateway.response_filters import silence_allowed
+
+    adapter = make_adapter(tmp_path, allow_all=True)
+    message = adapter._to_message_event(_group_text_event(
+        "Hubby    Do you want to just order some drinks tonight?"
+    ))
+    assert message is not None
+    assert message.reply_expected is False
+    # The gateway keeps a human turn's bare silence marker silent only for False.
+    assert silence_allowed(None, message.reply_expected) is True
+
+
+def test_group_message_naming_the_bot_expects_a_reply(tmp_path):
+    adapter = make_adapter(tmp_path, allow_all=True)
+    for text in ("Gordie, add milk to the list", "can you check this @gordie", "hey GORDIE"):
+        message = adapter._to_message_event(_group_text_event(text))
+        assert message is not None
+        assert message.reply_expected is True, text
+
+
+def test_group_message_uses_configured_mention_patterns(tmp_path):
+    adapter = make_adapter(tmp_path, allow_all=True, mention_patterns=[r"\bbuddy\b"])
+    assert adapter._to_message_event(_group_text_event("buddy, you there?")).reply_expected is True
+    assert adapter._to_message_event(_group_text_event("Gordie, you there?")).reply_expected is False
+
+
+def test_group_reply_to_the_bots_own_message_expects_a_reply(tmp_path):
+    adapter = make_adapter(tmp_path, allow_all=True)
+    adapter._remember_sent_message("16", "BOT-SENT-GUID")
+    message = adapter._to_message_event(_group_text_event(
+        "yes please", thread_originator_guid="BOT-SENT-GUID"
+    ))
+    assert message.reply_expected is True
+    other = adapter._to_message_event(_group_text_event(
+        "lol same", thread_originator_guid="SOMEONE-ELSES-GUID"
+    ))
+    assert other.reply_expected is False
+
+
+def test_dm_keeps_the_visible_silence_fallback(tmp_path):
+    from gateway.response_filters import silence_allowed
+
+    adapter = make_adapter(tmp_path, allow_all=True)
+    message = adapter._to_message_event(_group_text_event(
+        "tell Hubby I'm running late", chat_id=3, is_group=False
+    ))
+    assert message.reply_expected is None
+    assert silence_allowed(None, message.reply_expected) is False
+
+
+def test_group_silence_can_be_turned_off(tmp_path, monkeypatch):
+    adapter = make_adapter(tmp_path, allow_all=True, group_silence=False)
+    assert adapter._to_message_event(_group_text_event("Hubby, dinner?")).reply_expected is None
+    assert adapter._to_message_event(_group_text_event("Gordie, dinner?")).reply_expected is True
+    monkeypatch.setenv("IMSG_GROUP_SILENCE", "false")
+    env_adapter = make_adapter(tmp_path, allow_all=True)
+    assert env_adapter._to_message_event(_group_text_event("Hubby, dinner?")).reply_expected is None
+
+
+def test_older_hermes_without_reply_expected_still_gets_events(tmp_path, monkeypatch):
+    import hermes_imsg_cli.adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "_EVENT_TAKES_REPLY_EXPECTED", False)
+    adapter = make_adapter(tmp_path, allow_all=True)
+    assert adapter._reply_expected_kwargs(
+        _group_text_event("Hubby, dinner?"), conversational=True, thread_originator=None
+    ) == {}
+    assert adapter._to_message_event(_group_text_event("Hubby, dinner?")) is not None
+
+
+def test_group_poll_vote_lets_silence_stand(tmp_path):
+    adapter = make_adapter(tmp_path, allow_all=True, poll_vote_events={"group": True})
+    message = adapter._to_message_event(_poll_vote_event(is_group=True))
+    assert message is not None
+    assert message.reply_expected is False
+
+
 def test_native_poll_renders_numbered_options_and_counts(tmp_path):
     adapter = make_adapter(tmp_path, allow_all=True)
     raw = _poll_created_event()

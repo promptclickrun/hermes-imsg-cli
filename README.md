@@ -157,6 +157,7 @@ IMCore behavior. On a normal SIP-enabled Mac, use the public-only settings in
 | `IMSG_ALLOW_ALL_USERS` | Allow every user. Use this only for development. |
 | `IMSG_REQUIRE_MENTION` | Require a mention in group chats. |
 | `IMSG_MENTION_PATTERNS` | Group mention patterns as a JSON array or comma- or newline-separated regular expressions. |
+| `IMSG_GROUP_SILENCE` | Let the agent stay silent on group messages that don't name it or reply to it. The default is `true`; `false` restores Hermes' visible "silence marker" warning. |
 | `IMSG_AUTO_LAUNCH` | Re-arm the Messages.app bridge on connect. The default is `true`. |
 | `IMSG_SEND_READ_RECEIPTS` | Send read receipts for inbound messages. The default is `true`. |
 | `IMSG_REACTION_NOTIFICATIONS` | Deliver inbound tapbacks for `own`, `all`, or `off`. The default is `off`; `own` and `all` intentionally turn accepted Tapbacks into agent turns. |
@@ -194,6 +195,20 @@ messages are always dropped, including when `allow_all` is enabled.
 event. `strict` runs `imsg group --chat-id <rowid> --json` and caches the result
 for `participant_cache_ttl` seconds. Strict mode fails closed if the command or
 JSON parsing fails.
+
+### Group silence
+
+In a group, people mostly talk to each other. When a group message doesn't
+match `mention_patterns` (default: `gordie`) and isn't a reply to one of the
+agent's own messages, the plugin tells Hermes it wasn't addressed to the agent
+(`reply_expected: false`). The agent can then answer with its silence marker
+and nothing is sent. Without this, Hermes replaces that silence with
+"The model returned only a silence marker for a message that needed a reply."
+
+A message that names the agent or replies to it still expects an answer, and
+DMs always do. Set `group_silence: false` (or `IMSG_GROUP_SILENCE=false`) to
+keep Hermes' warning in groups. Hermes cores without `reply_expected` ignore
+this setting.
 
 ### Poll vote delivery
 

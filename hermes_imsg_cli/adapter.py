@@ -16,6 +16,7 @@ platform registry.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import os
@@ -55,6 +56,7 @@ from .config import (
     ENV_DEBOUNCE,
     ENV_FALLBACK_ACTION,
     ENV_GROUP_ALLOWED_USERS,
+    ENV_GROUP_SILENCE,
     ENV_HOME_CHANNEL,
     ENV_MENTION_PATTERNS,
     ENV_PARTICIPANT_CACHE_TTL,
@@ -87,6 +89,12 @@ from .rules import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Hermes added ``MessageEvent.reply_expected`` in late September 2026; older
+# cores reject the keyword, so it is passed only when the field exists.
+_EVENT_TAKES_REPLY_EXPECTED = dataclasses.is_dataclass(MessageEvent) and any(
+    f.name == "reply_expected" for f in dataclasses.fields(MessageEvent)
+)
 
 PLATFORM_HINT = (
     "You are chatting via iMessage/SMS. Supported emphasis markup is converted "
@@ -416,6 +424,11 @@ class ImsgAdapter(BasePlatformAdapter):
         self.mention_patterns = self._compile_mention_patterns(
             extra.get("mention_patterns") or os.getenv(ENV_MENTION_PATTERNS)
         )
+        # A group message that neither names the bot nor replies to it may end
+        # with the agent staying silent; off keeps Hermes' visible fallback.
+        self.group_silence = _as_bool(
+            extra.get("group_silence", os.getenv(ENV_GROUP_SILENCE)), True
+        )
         # IMCore advanced features (typing indicators, read receipts) require
         # Messages.app to be launched with imsg's injected bridge dylib.  Re-arm
         # the bridge on connect by default.
@@ -575,6 +588,37 @@ class ImsgAdapter(BasePlatformAdapter):
             if match:
                 return stripped[match.end():].lstrip(" ,:-") or text
         return text
+
+    def _reply_expected(
+        self,
+        event: dict[str, Any],
+        *,
+        conversational: bool,
+        thread_originator: Optional[str],
+    ) -> Optional[bool]:
+        """``MessageEvent.reply_expected`` for an admitted message.
+
+        Hermes replaces a bare silence marker on a human turn with a visible
+        warning unless the adapter says the message wasn't meant for the bot.
+        In a group, people talk to each other, so a message is addressed to the
+        bot only when it names the bot (``mention_patterns``) or replies to one
+        of the bot's own messages. Any other group message, and any Tapback or
+        poll vote there, is False so the agent can stay silent. DMs are always
+        meant for the bot and stay None, keeping the fallback.
+        """
+        if not _event_is_group(event):
+            return None
+        if conversational:
+            if self._message_matches_mention(_event_text(event)):
+                return True
+            if thread_originator and thread_originator in self._sent_message_guids:
+                return True
+        return False if self.group_silence else None
+
+    def _reply_expected_kwargs(self, event: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        if not _EVENT_TAKES_REPLY_EXPECTED:
+            return {}
+        return {"reply_expected": self._reply_expected(event, **kwargs)}
 
     # ------------------------------------------------------------------
     # State persistence
@@ -1257,6 +1301,11 @@ class ImsgAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             reply_to_author_id=reply_to_author,
             metadata=metadata,
+            **self._reply_expected_kwargs(
+                event,
+                conversational=reaction is None and poll_kind in (None, "created"),
+                thread_originator=thread_originator,
+            ),
         )
 
     # ------------------------------------------------------------------

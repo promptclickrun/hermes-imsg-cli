@@ -51,6 +51,7 @@ ENV_GROUP_ACTION_ADMINS = "IMSG_GROUP_ACTION_ADMINS"
 ENV_ALLOWED_CHATS = "IMSG_ALLOWED_CHATS"
 ENV_ALLOW_ALL_USERS = "IMSG_ALLOW_ALL_USERS"
 ENV_REQUIRE_MENTION = "IMSG_REQUIRE_MENTION"
+ENV_GROUP_SILENCE = "IMSG_GROUP_SILENCE"
 ENV_AUTO_LAUNCH = "IMSG_AUTO_LAUNCH"
 ENV_SEND_READ_RECEIPTS = "IMSG_SEND_READ_RECEIPTS"
 ENV_FALLBACK_ACTION = "IMSG_FALLBACK_ACTION"
@@ -343,6 +344,8 @@ def env_enablement_fn() -> Optional[dict]:
         seed["allow_all"] = _as_bool(os.getenv(ENV_ALLOW_ALL_USERS))
     if os.getenv(ENV_REQUIRE_MENTION, "").strip():
         seed["require_mention"] = _as_bool(os.getenv(ENV_REQUIRE_MENTION))
+    if os.getenv(ENV_GROUP_SILENCE, "").strip():
+        seed["group_silence"] = _as_bool(os.getenv(ENV_GROUP_SILENCE))
     if os.getenv(ENV_AUTO_LAUNCH, "").strip():
         seed["auto_launch"] = _as_bool(os.getenv(ENV_AUTO_LAUNCH))
     if os.getenv(ENV_SEND_READ_RECEIPTS, "").strip():
@@ -431,6 +434,7 @@ def apply_yaml_config_fn(yaml_cfg: dict, platform_cfg: dict) -> Optional[dict]:
     for key, env_name in (
         ("allow_all", ENV_ALLOW_ALL_USERS),
         ("require_mention", ENV_REQUIRE_MENTION),
+        ("group_silence", ENV_GROUP_SILENCE),
         ("auto_launch", ENV_AUTO_LAUNCH),
         ("send_read_receipts", ENV_SEND_READ_RECEIPTS),
         ("reaction_notifications", ENV_REACTION_NOTIFICATIONS),

@@ -1,7 +1,7 @@
 name: imsg-platform
 label: iMessage
 kind: platform
-version: 2.0.1
+version: 2.0.2
 description: >
   Native iMessage/SMS gateway adapter for Hermes Agent, backed by the local
   `imsg` CLI on macOS.  Registers the `imsg` platform via the stock plugin API
@@ -53,6 +53,10 @@ optional_env:
   - name: IMSG_REQUIRE_MENTION
     description: "Require a mention to trigger in group chats (true/false)."
     prompt: "Require mention in groups? (true/false)"
+    password: false
+  - name: IMSG_GROUP_SILENCE
+    description: "Let the agent stay silent on group messages that don't name it or reply to it (default: true)."
+    prompt: "Allow silence on unaddressed group messages? (true/false)"
     password: false
   - name: IMSG_AUTO_LAUNCH
     description: "Re-arm the imsg Messages.app bridge on connect (default: true)."

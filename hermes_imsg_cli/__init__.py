@@ -9,7 +9,7 @@ without a full Hermes checkout on ``PYTHONPATH``.
 from __future__ import annotations
 
 __all__ = ["register"]
-__version__ = "2.0.1"
+__version__ = "2.0.2"
 
 
 def register(ctx) -> None:

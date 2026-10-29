@@ -6,6 +6,16 @@ The plugin uses the locally installed `imsg` executable and keeps platform
 policy in Hermes. Upgrading the plugin does not modify Messages.app, TCC, SIP,
 the `imsg` package, or the Hermes core checkout.
 
+## Version 2.0.2 group silence
+
+- A group message that doesn't name the agent (`mention_patterns`) or reply
+  to one of its messages now reaches Hermes with `reply_expected: false`, so
+  the agent can stay silent when people talk to each other. Hermes no longer
+  answers those with its "returned only a silence marker" warning. Group
+  Tapbacks and poll votes are treated the same way. DMs are unchanged.
+- `group_silence: false` (`IMSG_GROUP_SILENCE=false`) restores the old
+  behavior.
+
 ## Version 2.0.1 safety changes
 
 - Ordinary text, document, image, video, and voice responses ignore Hermes

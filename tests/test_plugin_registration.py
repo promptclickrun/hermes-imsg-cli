@@ -176,11 +176,13 @@ def test_apply_yaml_config_bridges_env_and_returns_extra(monkeypatch):
         "IMSG_ALLOWED_USERS",
         "IMSG_GROUP_ACTION_ADMINS",
         "IMSG_HOME_CHANNEL",
+        "IMSG_GROUP_SILENCE",
     ):
         monkeypatch.delenv(var, raising=False)
     platform_cfg = {
         "extra": {
             "binary": "/opt/homebrew/bin/imsg",
+            "group_silence": False,
             "allowed_handles": ["+12025550105", "+12025550106"],
             "group_action_admins": ["+12025550105"],
             "rules": [{"name": "owners_dm", "action": "allow"}],
@@ -199,6 +201,8 @@ def test_apply_yaml_config_bridges_env_and_returns_extra(monkeypatch):
     assert os.environ["IMSG_ALLOWED_USERS"] == "+12025550105,+12025550106"
     assert os.environ["IMSG_GROUP_ACTION_ADMINS"] == "+12025550105"
     assert os.environ["IMSG_HOME_CHANNEL"] == "16"
+    assert seed["group_silence"] is False
+    assert os.environ["IMSG_GROUP_SILENCE"] == "False"
 
 
 def test_apply_yaml_config_env_wins_over_yaml(monkeypatch):
